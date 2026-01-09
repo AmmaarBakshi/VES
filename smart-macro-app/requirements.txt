@@ -1,0 +1,8 @@
+customtkinter
+ollama
+pandas
+openpyxl
+python-docx
+python-pptx
+pypdf
+packaging
