@@ -1,7 +1,7 @@
 import ollama
 
 # HARDCODED CLOUD MODEL as per your request
-MODEL_NAME = "qwen2.5:3b"
+MODEL_NAME = "deepseek-v3.1:671b-cloud"
 
 def query_ollama(prompt):
     """
