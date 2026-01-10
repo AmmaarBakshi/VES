@@ -12,8 +12,11 @@ from app.engine.excel_agent import process_excel_file
 from app.engine.ppt_agent import process_ppt_file
 from app.engine.pdf_agent import process_pdf_file
 from app.engine.smart_fill import smart_fill_content
-from app.engine.action_repeater import ActionRepeater
 from app.engine.pdf_maker import create_filled_pdf
+
+# NEW IMPORT: The Advanced Recorder Tab
+# (Make sure you created app/gui/recorder_tab.py from the previous step!)
+from app.gui.recorder_tab import RecorderTab
 
 # --- UI SETTINGS ---
 ctk.set_appearance_mode("Dark")
@@ -23,10 +26,7 @@ class AppWindow(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("Smart Macro Station")
-        self.geometry("950x750")
-
-        # Initialize the Action Recorder Engine
-        self.repeater = ActionRepeater()
+        self.geometry("1000x800")
 
         # --- TABS LAYOUT ---
         self.tab_view = ctk.CTkTabview(self)
@@ -243,83 +243,15 @@ class AppWindow(ctk.CTk):
                 pass
 
     # ========================================================
-    # TAB 3: ACTION RECORDER (Mouse/Key Repeater)
+    # TAB 3: ACTION RECORDER (ADVANCED INTEGRATION)
     # ========================================================
     def setup_recorder_tab(self):
-        frame = self.tab_recorder
-        
-        ctk.CTkLabel(frame, text="Macro Recorder", font=("Arial", 18, "bold")).pack(pady=10)
-        ctk.CTkLabel(frame, text="1. Click Record -> App will minimize.\n2. Do your task (Open apps, type, click).\n3. Open this app & Click Stop.").pack(pady=10)
-
-        # Record Button
-        self.btn_rec = ctk.CTkButton(frame, text="🔴 START RECORDING", fg_color="red", command=self.toggle_recording)
-        self.btn_rec.pack(pady=10)
-
-        self.lbl_rec_status = ctk.CTkLabel(frame, text="Status: Idle", text_color="gray")
-        self.lbl_rec_status.pack(pady=5)
-
-        # Macro Selector for Playback
-        ctk.CTkLabel(frame, text="Saved Action Macros:").pack(pady=10)
-        self.action_macro_list = ctk.CTkComboBox(frame, values=self.get_saved_action_macros())
-        self.action_macro_list.pack(pady=5)
-
-        # Play Button
-        self.btn_play = ctk.CTkButton(frame, text="▶ PLAY MACRO", fg_color="green", command=self.play_macro)
-        self.btn_play.pack(pady=20)
-
-    def toggle_recording(self):
-        if not self.repeater.recording:
-            # Start
-            self.repeater.start_recording()
-            self.btn_rec.configure(text="⏹ STOP RECORDING", fg_color="black")
-            self.lbl_rec_status.configure(text="Recording... (Press Stop to save)", text_color="red")
-            
-            # Minimize window so we don't record clicking the app itself
-            self.iconify() 
-        else:
-            # Stop
-            actions = self.repeater.stop_recording()
-            self.btn_rec.configure(text="🔴 START RECORDING", fg_color="red")
-            self.lbl_rec_status.configure(text=f"Captured {len(actions)} actions.", text_color="green")
-            self.deiconify() # Bring window back
-            
-            # Save dialog
-            dialog = ctk.CTkInputDialog(text="Name this recording:", title="Save Macro")
-            name = dialog.get_input()
-            if name:
-                # Ensure directory exists
-                os.makedirs("user_data/configs", exist_ok=True)
-                path = f"user_data/configs/{name}.json"
-                self.repeater.save_macro(path)
-                self.action_macro_list.configure(values=self.get_saved_action_macros())
-
-    def play_macro(self):
-        name = self.action_macro_list.get()
-        if not name or name == "None": 
-            return
-        
-        path = f"user_data/configs/{name}.json"
-        self.lbl_rec_status.configure(text="Playing Macro... Hands off!", text_color="orange")
-        self.update()
-        
-        # Run in thread so GUI doesn't freeze
-        threading.Thread(target=self.run_play_thread, args=(path,)).start()
-
-    def run_play_thread(self, path):
-        # Give user 3 seconds to switch windows
-        time.sleep(3)
-        msg = self.repeater.load_and_play(path)
-        
-        # Use after to update GUI from thread
-        self.after(0, lambda: self.lbl_rec_status.configure(text=msg, text_color="green"))
-
-    def get_saved_action_macros(self):
-        folder = "user_data/configs"
-        if not os.path.exists(folder): 
-            return ["None"]
-        # Only JSON files
-        files = [f.replace(".json","") for f in os.listdir(folder) if f.endswith(".json")]
-        return files if files else ["None"]
+        """
+        Embeds the advanced RecorderTab we created separately.
+        """
+        # We simply create the RecorderTab class and attach it to this tab's frame.
+        self.recorder_ui = RecorderTab(self.tab_recorder)
+        self.recorder_ui.pack(fill="both", expand=True)
 
     # ========================================================
     # TAB 4: DIRECTORY MAKER (Text -> Folders)
