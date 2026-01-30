@@ -1,49 +1,60 @@
+import threading
 import os
-from pypdf import PdfReader
-from app.ai.llm_client import query_ollama
-from app.ai.prompts import get_prompt
+from langchain_community.llms import Ollama
 
-def process_pdf_file(file_path, instruction):
-    """
-    Reads a PDF, extracts text, summarizes/edits it with AI, and saves to .txt.
-    (PDF editing is hard, so we save as text for now).
-    """
-    try:
-        reader = PdfReader(file_path)
-        full_text = ""
-        
-        # specific check for encrypted files
-        if reader.is_encrypted:
+# IMPORTS: We import the function from the neighboring file 'pdf_maker.py'
+try:
+    from app.engine.pdf_maker import create_filled_pdf
+except ImportError:
+    # If Python gets confused about paths, we try a relative import
+    from .pdf_maker import create_filled_pdf
+
+class PDFAgent:
+    def __init__(self):
+        # Ensure Ollama is running in your terminal!
+        self.llm = Ollama(model="llama3")
+
+    def generate_smart_pdf(self, topic, update_callback):
+        """
+        topic: The user's input string
+        update_callback: A function to update the UI
+        """
+        def run():
             try:
-                reader.decrypt("")
-            except:
-                return "Error: PDF is password protected."
+                # --- Step 1: AI Writing Content ---
+                update_callback("step_1", "running")
+                
+                prompt = (
+                    f"Write a professional, well-structured document about: '{topic}'. "
+                    "Do not use markdown symbols like ** or ##. "
+                    "Just write clean, readable text with paragraphs."
+                )
+                
+                # Get text from AI
+                generated_content = self.llm.invoke(prompt)
+                update_callback("step_1", "done")
 
-        for page in reader.pages:
-            text = page.extract_text()
-            if text:
-                full_text += text + "\n"
+                # --- Step 2: Generating PDF File ---
+                update_callback("step_2", "running")
+                
+                # Define filename
+                filename = f"{topic.replace(' ', '_')}_generated.pdf"
+                # Save it in the current working directory
+                output_path = os.path.join(os.getcwd(), filename)
+                
+                # Call the function you already have in pdf_maker.py
+                result = create_filled_pdf(generated_content, output_path)
+                
+                # Check if your pdf_maker returned an error string
+                if result and "Error" in str(result):
+                    raise Exception(str(result))
+                    
+                update_callback("step_2", "done")
+                update_callback("final", f"Saved as {filename}")
 
-        if not full_text.strip():
-            return "Error: No text found in PDF (It might be a scanned image)."
+            except Exception as e:
+                print(f"Error: {e}")
+                update_callback("error", str(e))
 
-        # Limit text to 4000 chars to prevent crashing the local AI
-        chunk = full_text[:4000]
-        
-        prompt = get_prompt(instruction, chunk)
-        ai_response = query_ollama(prompt)
-
-        # Save to a text file
-        base_name = os.path.basename(file_path)
-        new_filename = f"PROCESSED_{base_name}.txt"
-        dir_name = os.path.dirname(file_path)
-        new_path = os.path.join(dir_name, new_filename)
-        
-        with open(new_path, "w", encoding="utf-8") as f:
-            f.write(ai_response)
-            
-        return new_path
-
-    except Exception as e:
-        print(f"PDF Error Detail: {e}") # Print to terminal for debugging
-        return f"Error: {str(e)}"
+        # Run in background thread so UI doesn't freeze
+        threading.Thread(target=run, daemon=True).start()

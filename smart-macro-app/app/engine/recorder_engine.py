@@ -3,9 +3,22 @@ import time
 import math
 import json
 import os
+import ctypes
+import pyautogui
+import pygetwindow as gw
+import uuid
 from pynput import mouse, keyboard
 from pynput.keyboard import Key, KeyCode, Listener as KeyboardListener, Controller as KeyboardController
 from pynput.mouse import Listener as MouseListener, Controller as MouseController
+
+# FORCE high-DPI awareness on Windows to prevent coordinate shifting
+try:
+    ctypes.windll.shcore.SetProcessDpiAwareness(1)
+except Exception:
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
 
 # Save recordings in the user_data folder we created earlier
 RECORDINGS_DIR = "user_data/recordings"
@@ -22,10 +35,16 @@ class Recorder:
         self.keyboard_listener = None
         self.mouse_listener = None
         self.last_mouse_pos = (0, 0)
+        
+        # Image Storage
+        self.image_folder = os.path.join(RECORDINGS_DIR, "images")
+        os.makedirs(self.image_folder, exist_ok=True)
+        self.session_id = None
 
     def start(self):
         self.events = []
         self.start_time = time.time()
+        self.session_id = str(uuid.uuid4())[:8]
         self.recording = True
         self.keyboard_listener = KeyboardListener(on_press=self.on_press, on_release=self.on_release)
         self.mouse_listener = MouseListener(on_move=self.on_move, on_click=self.on_click, on_scroll=self.on_scroll)
@@ -56,8 +75,56 @@ class Recorder:
         self.events.append({'type': 'mouse', 'action': 'move', 'position': (x, y), 'time': time.time() - self.start_time})
 
     def on_click(self, x, y, button, pressed):
-        if not self.recording: return
-        self.events.append({'type': 'mouse', 'action': 'click', 'position': (x, y), 'button': button.name, 'pressed': pressed, 'time': time.time() - self.start_time})
+        if not self.recording or not pressed: return
+        
+        # Gather Context
+        timestamp = time.time() - self.start_time
+        
+        # 1. Window Capture
+        win_title = None
+        rel_x = x
+        rel_y = y
+        try:
+            # Prioritize Active Window if click is inside it
+            active = gw.getActiveWindow()
+            target_win = None
+            if active and (active.left <= x <= active.right and active.top <= y <= active.bottom):
+                target_win = active
+            else:
+                 # Fallback
+                wins = gw.getWindowsAt(x, y)
+                if wins: target_win = wins[0]
+            
+            if target_win:
+                win_title = target_win.title
+                rel_x = x - target_win.left
+                rel_y = y - target_win.top
+                print(f"[REC] Window: '{win_title}' | Rel: ({rel_x}, {rel_y})")
+        except: pass
+
+        # 2. Image Anchor
+        img_path = None
+        try:
+            img_name = f"{self.session_id}_{int(timestamp*1000)}.png"
+            full_path = os.path.join(self.image_folder, img_name)
+            # Capture 60x60 around click
+            capture_region = (x - 30, y - 30, 60, 60)
+            pyautogui.screenshot(region=capture_region).save(full_path)
+            img_path = full_path
+        except Exception as e:
+            print(f"[REC] Img Capture Error: {e}")
+
+        self.events.append({
+            'type': 'mouse', 
+            'action': 'click', 
+            'position': (x, y), 
+            'relative_pos': (rel_x, rel_y),
+            'window_title': win_title,
+            'image_path': img_path,
+            'button': button.name, 
+            'pressed': pressed, 
+            'time': timestamp
+        })
 
     def on_scroll(self, x, y, dx, dy):
         if not self.recording: return
@@ -142,9 +209,79 @@ class Player:
                 if event['action'] == 'move': 
                     self.mouse_controller.position = event['position']
                 elif event['action'] == 'click':
-                    btn = getattr(mouse.Button, event['button'], mouse.Button.left)
-                    if event['pressed']: self.mouse_controller.press(btn)
-                    else: self.mouse_controller.release(btn)
+                    if event.get('pressed', False): # Only handle press for complex logic
+                        target_x, target_y = event['position']
+                        
+                        # --- ROBUST PLAYBACK LOGIC ---
+                        win_title = event.get('window_title')
+                        if win_title:
+                            try:
+                                # Find Valid Window
+                                candidates = [w for w in gw.getWindowsWithTitle(win_title) if w.title]
+                                
+                                # Exact vs Fuzzy Match
+                                target_win = None
+                                for w in candidates:
+                                    if w.title == win_title: 
+                                        target_win = w
+                                        break
+                                if not target_win: # Fuzzy fallback
+                                    clean = win_title.lower().strip()
+                                    for w in gw.getAllWindows():
+                                         if w.title and clean in w.title.lower():
+                                             target_win = w
+                                             break
+                                
+                                if target_win:
+                                    if target_win.isMinimized:
+                                        target_win.restore()
+                                        time.sleep(0.2)
+                                    try:
+                                        target_win.activate()
+                                        # Aggressive Focus
+                                        try:
+                                            hwnd = target_win._hWnd
+                                            ctypes.windll.user32.SetForegroundWindow(hwnd)
+                                        except: pass
+                                        time.sleep(0.2)
+                                    except: pass
+                                    
+                                    # Fallback to Relative Coords
+                                    if 'relative_pos' in event:
+                                        rx, ry = event['relative_pos']
+                                        target_x = target_win.left + rx
+                                        target_y = target_win.top + ry
+                                        # print(f"Window Fallback: ({target_x}, {target_y})")
+                            except Exception as e:
+                                print(f"Win Error: {e}")
+
+                        # --- IMAGE SEARCH (PRIMARY) ---
+                        if event.get('image_path') and os.path.exists(event['image_path']):
+                            # Retry Loop: Wait for image to appear (animations, loading)
+                            start_search = time.time()
+                            found = None
+                            
+                            while time.time() - start_search < 2.0: # Try for 2 seconds
+                                try:
+                                    found = pyautogui.locateCenterOnScreen(event['image_path'], confidence=0.8)
+                                    if found: break
+                                except: pass
+                                time.sleep(0.1)
+                                
+                            if found:
+                                print(f"✅ Image Match: {found}")
+                                target_x, target_y = found
+                            else:
+                                print("⚠️ Image not found after 2s, using coords")
+                        
+                        # EXECUTE CLICK
+                        # Use pyautogui for click to ensure it hits the right spot visually
+                        pyautogui.click(target_x, target_y, button=event['button'])
+                        
+                        # Sync pynput controller just in case
+                        self.mouse_controller.position = (target_x, target_y)
+                    else:
+                         pass # Release is handled by pyautogui.click usually, or we skip
                 elif event['action'] == 'scroll': 
                     self.mouse_controller.scroll(*event['scroll'])
         except Exception: pass
