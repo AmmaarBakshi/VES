@@ -1,58 +1,120 @@
 import os
+import threading
+import re
+import time
+from langchain_ollama import OllamaLLM
 
-def create_directory_from_text(root_path, tree_text):
+class SmartScaffolder:
+    def __init__(self):
+        self.llm = OllamaLLM(model="llama3", temperature=0.4)
+
+    def identify_context(self, tree_text):
+        try:
+            prompt = (
+                f"Analyze this directory structure:\n{tree_text}\n\n"
+                "Identify the programming language or framework (e.g., Python Flask, React, Data Science).\n"
+                "Return ONLY the name of the tech stack."
+            )
+            return self.llm.invoke(prompt).strip()
+        except:
+            return "General Code"
+
+    def generate_content(self, filename, tree_text, context):
+        try:
+            if any(ext in filename for ext in ['.png', '.jpg', '.pyc', '.exe']):
+                return ""
+
+            if filename.lower() == "readme.md":
+                prompt = (
+                    f"Write a professional README.md for a {context} project.\n"
+                    f"Structure:\n{tree_text}\n\n"
+                    "Include Title, Description, and Run Instructions. Return Markdown only."
+                )
+            elif filename == "requirements.txt":
+                prompt = f"List standard {context} libraries for this structure. Return list only."
+            elif filename == ".gitignore":
+                prompt = f"Standard .gitignore for {context}. Return content only."
+            else:
+                prompt = (
+                    f"Write professional starter code for '{filename}' in a {context} project.\n"
+                    f"Structure:\n{tree_text}\n"
+                    "Return ONLY the code. No markdown formatting."
+                )
+            
+            response = self.llm.invoke(prompt)
+            return re.sub(r'^```[a-zA-Z]*\n|```$', '', response.strip(), flags=re.MULTILINE)
+
+        except Exception as e:
+            return f"# Error: {e}"
+
+# Init Engine
+scaffolder = SmartScaffolder()
+
+def create_directory_from_text(root_path, tree_text, update_callback=None):
     """
-    Parses a directory tree text and creates the actual folders/files.
+    Robust parser with REAL-TIME UI UPDATES.
     """
     lines = tree_text.split('\n')
-    path_stack = [] # Keeps track of the current path depth
+    path_stack = [(-1, root_path)]
     
-    try:
-        # Create root if it doesn't exist
-        os.makedirs(root_path, exist_ok=True)
-        
-        for line in lines:
-            stripped = line.strip()
-            if not stripped or "│" not in line and "├──" not in line and "└──" not in line and "/" not in line:
-                continue
+    def run_scaffold():
+        try:
+            # 1. Notify Start
+            if update_callback: update_callback("start", "🚀 Analyzing structure...")
+            os.makedirs(root_path, exist_ok=True)
+            
+            # 2. Detect Context
+            project_context = scaffolder.identify_context(tree_text)
+            if update_callback: update_callback("running", f"💡 Detected Stack: {project_context}")
+            time.sleep(1) # Small pause so user sees the text
 
-            # Calculate depth based on indentation or special chars
-            # Simple heuristic: count spaces/tabs or tree markers
-            depth = 0
-            clean_name = stripped
-            
-            # Remove tree markers to get the clean name
-            for marker in ["├──", "└──", "│", "|--", "`--"]:
-                if marker in line:
-                    clean_name = line.split(marker)[-1].strip()
-                    # Depth estimation: characters before the marker
-                    prefix = line.split(marker)[0]
-                    depth = len(prefix) // 4 # Standard tree indent is 4 chars
-                    break
-            
-            # Remove comments (anything after #)
-            clean_name = clean_name.split('#')[0].strip()
-            if not clean_name: continue
+            # 3. Build Loop
+            for line in lines:
+                if not line.strip(): continue
+                
+                # Indent Calculation
+                raw_indent = 0
+                for char in line:
+                    if char in [' ', '│', '|']: raw_indent += 1
+                    elif char == '\t': raw_indent += 4
+                    else: break
+                
+                # Name Cleanup
+                clean_name = line.strip()
+                clean_name = re.sub(r'^[\│\|\+\`\s]*[\-\—]+\s*', '', clean_name)
+                clean_name = clean_name.split('#')[0].strip().replace("/", "")
+                
+                if not clean_name: continue
 
-            # Adjust stack to current depth
-            while len(path_stack) > depth:
-                path_stack.pop()
+                # Stack Management
+                while len(path_stack) > 1 and path_stack[-1][0] >= raw_indent:
+                    path_stack.pop()
+
+                current_parent = path_stack[-1][1]
+                full_path = os.path.join(current_parent, clean_name)
+
+                # File vs Folder Logic
+                is_file = "." in clean_name and not clean_name.startswith("docker") 
                 
-            # Construct full path
-            current_parent = path_stack[-1] if path_stack else root_path
-            full_path = os.path.join(current_parent, clean_name)
+                if is_file:
+                    # UPDATE UI: Show exactly what file is being written
+                    if update_callback: update_callback("running", f"📝 Writing code for {clean_name}...")
+                    
+                    content = scaffolder.generate_content(clean_name, tree_text, project_context)
+                    try:
+                        with open(full_path, 'w', encoding='utf-8') as f:
+                            f.write(content)
+                    except: pass
+                else:
+                    if update_callback: update_callback("running", f"📂 Creating folder {clean_name}...")
+                    os.makedirs(full_path, exist_ok=True)
+                    path_stack.append((raw_indent, full_path))
+
+            # 4. Notify Finish
+            if update_callback: update_callback("done", f"✅ Success! Project built at {root_path}")
             
-            # Check if it's a file or directory (Files usually have extensions or no trailing /)
-            # User example shows files like 'main.py' and folders like 'app/'
-            if "." in clean_name or clean_name == "requirements.txt" or clean_name == ".gitignore":
-                # It's a file
-                with open(full_path, 'w') as f:
-                    f.write("") # Create empty file
-            else:
-                # It's a directory
-                os.makedirs(full_path, exist_ok=True)
-                path_stack.append(full_path)
-                
-        return f"Success! Structure created at {root_path}"
-    except Exception as e:
-        return f"Error creating structure: {e}"
+        except Exception as e:
+            if update_callback: update_callback("error", f"❌ Error: {e}")
+
+    # Run in background
+    threading.Thread(target=run_scaffold, daemon=True).start()

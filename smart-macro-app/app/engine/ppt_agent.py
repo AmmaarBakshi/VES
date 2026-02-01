@@ -5,43 +5,55 @@ import re
 import time
 from pptx import Presentation
 from pptx.util import Pt
-from pptx.enum.text import MSO_AUTO_SIZE
+from pptx.enum.text import MSO_AUTO_SIZE, PP_ALIGN
+from pptx.dml.color import RGBColor
 from langchain_ollama import OllamaLLM 
 
 class PPTGenerator:
     def __init__(self):
-        # Temperature 0.5 keeps it creative but less likely to break JSON format
-        self.llm = OllamaLLM(model="llama3", temperature=0.5) 
+        # Temperature 0.7 for creative output
+        self.llm = OllamaLLM(model="llama3", temperature=0.7) 
 
     def generate_ppt(self, topic, update_callback):
         def run():
             try:
-                # --- Step 1: Research ---
+                # --- Step 1: Research & Scripting ---
                 update_callback("step_1", "running")
                 print(f"\n[DEBUG] Sending prompt for: {topic}")
                 
-                # We ask for JSON, but we are prepared if it fails
+                # --- PROMPT: DEMANDING LONG SCRIPT & CONTENT ---
                 prompt = (
-                    f"Create a 5-slide presentation about '{topic}'. "
-                    "Output a JSON array of objects. "
-                    "Format: [{\"title\": \"Slide Title\", \"content\": [\"Point 1\", \"Point 2\"]}]. "
-                    "Make bullet points detailed and academic. "
-                    "IMPORTANT: Do not use quotes \" inside the content strings unless escaped."
+                    f"You are an expert professor and keynote speaker. Create a 5-slide presentation about '{topic}'.\n"
+                    "REQUIREMENTS:\n"
+                    "1. Content: Write 3-4 DETAILED bullet points per slide. Explain the 'Why' and 'How'.\n"
+                    "2. Script: Write a VERY LONG, 150-WORD SPEECH for the speaker notes. Do not summarize. Write exactly what the speaker should say to the audience.\n"
+                    "3. Structure: Slide 1 is Title. Slides 2-5 are Content.\n\n"
+                    "OUTPUT FORMAT: Return ONLY a valid JSON array. No other text.\n"
+                    "[\n"
+                    "  {\n"
+                    "    \"type\": \"title\",\n"
+                    "    \"title\": \"Catchy Main Title\",\n"
+                    "    \"subtitle\": \"Professional Subtitle\",\n"
+                    "    \"notes\": \"(Opening Speech): Welcome everyone. Today we explore... [write 150 words here]\"\n"
+                    "  },\n"
+                    "  {\n"
+                    "    \"type\": \"content\",\n"
+                    "    \"title\": \"Slide Title\",\n"
+                    "    \"content\": [\"Point 1: Detailed explanation...\", \"Point 2: Evidence and examples...\"],\n"
+                    "    \"notes\": \"(Script): On this slide, notice how... [write 150 words here]\"\n"
+                    "  }\n"
+                    "]"
                 )
                 
                 response = self.llm.invoke(prompt)
-                print(f"[DEBUG] AI Response received ({len(response)} chars).")
-                # print(response) # Uncomment to see full raw text in terminal
+                print(f"[DEBUG] AI Response received.")
                 
                 update_callback("step_1", "done")
 
-                # --- Step 2: Parsing (With Backup) ---
+                # --- Step 2: Parsing ---
                 update_callback("step_2", "running")
                 
-                # Try strict JSON first
                 slides_data = self._extract_json(response)
-                
-                # If JSON fails, use the Backup Parser
                 if not slides_data:
                     print("[DEBUG] JSON parse failed. Switching to Backup Text Parser.")
                     slides_data = self._parse_text_backup(response)
@@ -51,38 +63,61 @@ class PPTGenerator:
                     
                 update_callback("step_2", "done")
 
-                # --- Step 3: Build PPT ---
+                # --- Step 3: Design & Build ---
                 update_callback("step_3", "running")
                 prs = Presentation()
                 
-                for slide_info in slides_data:
-                    layout = prs.slide_layouts[1] 
-                    slide = prs.slides.add_slide(layout)
+                for i, slide_info in enumerate(slides_data):
                     
-                    # Title
-                    if slide.shapes.title:
-                        slide.shapes.title.text = slide_info.get('title', 'Untitled')
-                    
-                    # Content
-                    if len(slide.placeholders) > 1:
-                        body = slide.placeholders[1]
+                    # 1. Choose Layout
+                    if i == 0 or slide_info.get("type") == "title":
+                        layout = prs.slide_layouts[0] # Title Slide
+                        slide = prs.slides.add_slide(layout)
                         
-                        # --- AUTO-FIT FIX ---
-                        body.text_frame.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
-                        body.text_frame.word_wrap = True
-                        
-                        tf = body.text_frame
-                        tf.clear() 
-                        
-                        content = slide_info.get('content', [])
-                        if isinstance(content, str): content = [content]
+                        if slide.shapes.title:
+                            slide.shapes.title.text = slide_info.get('title', topic)
+                        if len(slide.placeholders) > 1:
+                            slide.placeholders[1].text = slide_info.get('subtitle', 'Generated by AI')
                             
-                        for point in content:
-                            p = tf.add_paragraph()
-                            p.text = str(point).replace("**", "").strip()
-                            p.level = 0
-                            p.space_after = Pt(10) # Nice spacing
-                
+                    else:
+                        layout = prs.slide_layouts[1] # Content Slide
+                        slide = prs.slides.add_slide(layout)
+                        
+                        if slide.shapes.title:
+                            slide.shapes.title.text = slide_info.get('title', 'Untitled')
+                        
+                        # Content Logic
+                        if len(slide.placeholders) > 1:
+                            body = slide.placeholders[1]
+                            tf = body.text_frame
+                            tf.clear() 
+                            
+                            content = slide_info.get('content', [])
+                            if isinstance(content, str): content = [content]
+                                
+                            for point in content:
+                                p = tf.add_paragraph()
+                                p.text = str(point).replace("**", "").strip()
+                                p.level = 0
+                                p.space_after = Pt(10) # Gap between points
+
+                    # 2. Apply "Cyber Dark" Theme
+                    self._apply_cyber_theme(slide)
+
+                    # 3. Add Speaker Script (Notes)
+                    if "notes" in slide_info:
+                        if not slide.has_notes_slide:
+                            slide.notes_slide
+                        text_frame = slide.notes_slide.notes_text_frame
+                        text_frame.text = slide_info["notes"]
+
+                    # 4. FORCE AUTO-FIT (The Critical Fix)
+                    # We do this LAST to ensure no formatting overrides it
+                    if i > 0 and len(slide.placeholders) > 1:
+                         body = slide.placeholders[1]
+                         body.text_frame.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
+                         body.text_frame.word_wrap = True
+
                 # Save
                 safe_name = re.sub(r'[^a-zA-Z0-9]', '_', topic[:20])
                 filename = f"{safe_name}_{int(time.time())}.pptx"
@@ -102,53 +137,64 @@ class PPTGenerator:
 
         threading.Thread(target=run, daemon=True).start()
 
+    def _apply_cyber_theme(self, slide):
+        """
+        Applies 'Cyber Dark' theme WITHOUT breaking Auto-Fit.
+        """
+        # 1. Dark Background
+        background = slide.background
+        fill = background.fill
+        fill.solid()
+        fill.fore_color.rgb = RGBColor(18, 18, 18) # Dark Grey
+
+        # 2. Style Title (Neon Cyan)
+        if slide.shapes.title:
+            title = slide.shapes.title
+            for paragraph in title.text_frame.paragraphs:
+                for run in paragraph.runs:
+                    run.font.color.rgb = RGBColor(0, 240, 255)
+                    run.font.bold = True
+                    run.font.name = "Arial"
+
+        # 3. Style Body Text (White) - BUT DO NOT SET FONT SIZE
+        for shape in slide.shapes:
+            if not shape.has_text_frame: continue
+            if shape == slide.shapes.title: continue
+            
+            for paragraph in shape.text_frame.paragraphs:
+                for run in paragraph.runs:
+                    run.font.color.rgb = RGBColor(255, 255, 255)
+                    run.font.name = "Arial"
+                    # CRITICAL: Do NOT set run.font.size here.
+                    # Letting PowerPoint handle the sizing prevents overflow.
+
     def _extract_json(self, text):
-        """Try to find and parse JSON."""
         try:
-            # Look for [ ... ]
             match = re.search(r'\[.*\]', text, re.DOTALL)
-            if match:
-                return json.loads(match.group(0))
+            if match: return json.loads(match.group(0))
             return None
-        except:
-            return None
+        except: return None
 
     def _parse_text_backup(self, text):
-        """
-        FALLBACK: If JSON fails, manually find titles and bullets.
-        This ensures you ALWAYS get a presentation.
-        """
+        """Fallback if JSON fails."""
         slides = []
-        current_slide = {}
-        
-        lines = text.split('\n')
-        for line in lines:
+        current = {}
+        for line in text.split('\n'):
             line = line.strip()
             if not line: continue
-            
-            # Detect Slide Title (looking for "Slide" or just bold text)
-            if line.lower().startswith("slide") or "title:" in line.lower():
-                if current_slide: slides.append(current_slide)
-                # Clean title
-                clean_title = re.sub(r'Slide \d+:?', '', line, flags=re.IGNORECASE).replace("Title:", "").strip()
-                current_slide = {"title": clean_title, "content": []}
-            
-            # Detect Content (bullets -, *, or numbered 1.)
-            elif line.startswith(('-', '*', '•')) or re.match(r'\d+\.', line):
-                if "content" not in current_slide: current_slide["content"] = []
-                # Clean bullet
-                clean_point = re.sub(r'^[-*•\d\.]+\s*', '', line).strip()
-                current_slide["content"].append(clean_point)
+            if "Slide" in line or "Title:" in line:
+                if current: slides.append(current)
+                title = line.split(":")[-1].strip()
+                current = {"title": title, "content": [], "notes": "AI generated content."}
+            elif line.startswith("-") or line.startswith("*"):
+                if "content" in current: current["content"].append(line[1:].strip())
+        if current: slides.append(current)
         
-        if current_slide: slides.append(current_slide)
-        
-        # If fallback found nothing, create one generic slide so app doesn't crash
-        if not slides:
-            return [{"title": "Generated Presentation", "content": [text[:500] + "..."]}]
-            
+        if not slides: 
+            return [{"title": "Presentation", "content": ["Content generated successfully."], "notes": "End of presentation."}]
         return slides
 
-# --- Keep Enricher Class to prevent Import Errors ---
+# --- Keep Enricher Class ---
 class PPTEnricher:
     def __init__(self): pass
     def get_improvement_suggestions(self, path): return []
