@@ -4,7 +4,7 @@ import threading
 import os
 import time
 
-# --- IMPORTS FROM YOUR PROJECT MODULES ---
+# ---IMPORTS FROM YOUR PROJECT MODULES ---
 from app.utils.config_loader import save_macro, load_macros
 from app.utils.ollama_manager import get_ollama_manager
 from app.engine.directory_maker import create_directory_from_text
@@ -12,420 +12,1371 @@ from app.engine.word_agent import process_word_document
 from app.engine.excel_agent import process_excel_file
 from app.engine.smart_fill import smart_fill_content
 from app.engine.pdf_maker import create_filled_pdf
-
-# --- NEW IMPORTS FOR PPT & PDF AGENTS ---
 from app.engine.ppt_agent import PPTGenerator, PPTEnricher
 from app.engine.pdf_agent import PDFAgent
 from app.engine.excel_agent import enrich_excel_file, suggest_excel_improvements
 from app.engine.word_agent import enrich_word_document, suggest_word_improvements
-
-# --- IMPORT: The Advanced Recorder Tab ---
 from app.gui.recorder_tab import RecorderTab
 
-# --- UI SETTINGS ---
+# --- PREMIUM DESIGN SYSTEM ---
+DESIGN = {
+    # Colors - Modern gradient-ready palette
+    "bg_primary": "#0A0A0F",        # Deep space black
+    "bg_secondary": "#13131A",      # Elevated surface
+    "bg_tertiary": "#1A1A24",       # Card background
+    "bg_input": "#1F1F2E",          # Input fields
+    "bg_hover": "#252534",          # Hover states
+    
+    # Accent colors - Vibrant gradient system
+    "accent_primary": "#6366F1",    # Indigo
+    "accent_secondary": "#8B5CF6",  # Purple
+    "accent_gradient_start": "#6366F1",
+    "accent_gradient_end": "#8B5CF6",
+    
+    # Status colors
+    "success": "#10B981",           # Emerald
+    "warning": "#F59E0B",           # Amber
+    "danger": "#EF4444",            # Red
+    "info": "#3B82F6",              # Blue
+    
+    # Text hierarchy
+    "text_primary": "#F8FAFC",      # Almost white
+    "text_secondary": "#94A3B8",    # Slate
+    "text_tertiary": "#64748B",     # Muted slate
+    "text_disabled": "#475569",     # Dark slate
+    
+    # Borders & dividers
+    "border_subtle": "#1E293B",     # Subtle borders
+    "border_medium": "#334155",     # Medium borders
+    "border_accent": "#6366F1",     # Accent borders
+    
+    # Shadows (for depth)
+    "shadow_sm": "#000000",
+    "shadow_md": "#000000",
+    "shadow_lg": "#000000",
+    
+    # Typography
+    "font_display": ("SF Pro Display", "Segoe UI", "Roboto"),
+    "font_body": ("SF Pro Text", "Segoe UI", "Roboto"),
+    "font_mono": ("JetBrains Mono", "Consolas", "Monaco"),
+}
+
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
+
+
+class ModernButton(ctk.CTkButton):
+    """Premium button with smooth hover effects"""
+    def __init__(self, master, style="primary", **kwargs):
+        styles = {
+            "primary": {
+                "fg_color": DESIGN["accent_primary"],
+                "hover_color": DESIGN["accent_secondary"],
+                "text_color": DESIGN["text_primary"],
+                "border_width": 0,
+            },
+            "secondary": {
+                "fg_color": DESIGN["bg_tertiary"],
+                "hover_color": DESIGN["bg_hover"],
+                "text_color": DESIGN["text_primary"],
+                "border_width": 1,
+                "border_color": DESIGN["border_medium"],
+            },
+            "ghost": {
+                "fg_color": "transparent",
+                "hover_color": DESIGN["bg_hover"],
+                "text_color": DESIGN["text_secondary"],
+                "border_width": 0,
+            },
+            "success": {
+                "fg_color": DESIGN["success"],
+                "hover_color": "#059669",
+                "text_color": "white",
+                "border_width": 0,
+            },
+            "danger": {
+                "fg_color": DESIGN["danger"],
+                "hover_color": "#DC2626",
+                "text_color": "white",
+                "border_width": 0,
+            }
+        }
+        
+        style_config = styles.get(style, styles["primary"])
+        defaults = {
+            "corner_radius": 8,
+            "font": (DESIGN["font_body"][0], 13, "normal"),
+            "height": 40,
+            **style_config
+        }
+        defaults.update(kwargs)
+        super().__init__(master, **defaults)
+
+
+class ModernCard(ctk.CTkFrame):
+    """Elegant card component with subtle borders"""
+    def __init__(self, master, title=None, subtitle=None, **kwargs):
+        defaults = {
+            "fg_color": DESIGN["bg_tertiary"],
+            "corner_radius": 12,
+            "border_width": 1,
+            "border_color": DESIGN["border_subtle"],
+        }
+        defaults.update(kwargs)
+        super().__init__(master, **defaults)
+        
+        if title:
+            header = ctk.CTkFrame(self, fg_color="transparent")
+            header.pack(fill="x", padx=24, pady=(20, 0))
+            
+            title_label = ctk.CTkLabel(
+                header,
+                text=title,
+                font=(DESIGN["font_display"][0], 18, "bold"),
+                text_color=DESIGN["text_primary"],
+                anchor="w"
+            )
+            title_label.pack(side="left", fill="x", expand=True)
+            
+            if subtitle:
+                subtitle_label = ctk.CTkLabel(
+                    header,
+                    text=subtitle,
+                    font=(DESIGN["font_body"][0], 13),
+                    text_color=DESIGN["text_tertiary"],
+                    anchor="w"
+                )
+                subtitle_label.pack(anchor="w", padx=24, pady=(4, 0))
+            
+            # Subtle divider
+            divider = ctk.CTkFrame(self, height=1, fg_color=DESIGN["border_subtle"])
+            divider.pack(fill="x", padx=24, pady=(16, 0))
+
+
+class ModernInput(ctk.CTkEntry):
+    """Modern input field with focus states"""
+    def __init__(self, master, **kwargs):
+        defaults = {
+            "fg_color": DESIGN["bg_input"],
+            "border_color": DESIGN["border_subtle"],
+            "border_width": 1,
+            "corner_radius": 8,
+            "height": 44,
+            "font": (DESIGN["font_body"][0], 13),
+            "text_color": DESIGN["text_primary"],
+        }
+        defaults.update(kwargs)
+        super().__init__(master, **defaults)
+
+
+class StatusBadge(ctk.CTkFrame):
+    """Animated status indicator"""
+    def __init__(self, master, **kwargs):
+        super().__init__(
+            master,
+            fg_color=DESIGN["bg_secondary"],
+            corner_radius=20,
+            height=40,
+            **kwargs
+        )
+        
+        self.dot = ctk.CTkLabel(
+            self,
+            text="●",
+            font=("Arial", 14),
+            text_color=DESIGN["warning"]
+        )
+        self.dot.pack(side="left", padx=(12, 8))
+        
+        self.label = ctk.CTkLabel(
+            self,
+            text="Initializing...",
+            font=(DESIGN["font_body"][0], 12, "bold"),
+            text_color=DESIGN["text_secondary"]
+        )
+        self.label.pack(side="left", padx=(0, 16))
+    
+    def set_status(self, status, text):
+        colors = {
+            "success": DESIGN["success"],
+            "error": DESIGN["danger"],
+            "warning": DESIGN["warning"],
+            "loading": DESIGN["info"]
+        }
+        self.dot.configure(text_color=colors.get(status, DESIGN["text_disabled"]))
+        self.label.configure(text=text)
+
+
+class ProgressStep(ctk.CTkFrame):
+    """Animated step indicator for multi-step processes"""
+    def __init__(self, master, text, **kwargs):
+        super().__init__(master, fg_color="transparent", **kwargs)
+        
+        # Icon container
+        self.icon_container = ctk.CTkFrame(
+            self,
+            width=32,
+            height=32,
+            corner_radius=16,
+            fg_color=DESIGN["bg_input"],
+            border_width=2,
+            border_color=DESIGN["border_subtle"]
+        )
+        self.icon_container.pack(side="left", padx=(0, 12))
+        self.icon_container.pack_propagate(False)
+        
+        self.icon = ctk.CTkLabel(
+            self.icon_container,
+            text="○",
+            font=("Arial", 14),
+            text_color=DESIGN["text_disabled"]
+        )
+        self.icon.place(relx=0.5, rely=0.5, anchor="center")
+        
+        # Text
+        self.label = ctk.CTkLabel(
+            self,
+            text=text,
+            font=(DESIGN["font_body"][0], 13),
+            text_color=DESIGN["text_tertiary"],
+            anchor="w"
+        )
+        self.label.pack(side="left", fill="x", expand=True)
+    
+    def set_state(self, state):
+        if state == "pending":
+            self.icon.configure(text="○", text_color=DESIGN["text_disabled"])
+            self.label.configure(text_color=DESIGN["text_tertiary"])
+            self.icon_container.configure(
+                fg_color=DESIGN["bg_input"],
+                border_color=DESIGN["border_subtle"]
+            )
+        elif state == "active":
+            self.icon.configure(text="◔", text_color=DESIGN["accent_primary"])
+            self.label.configure(text_color=DESIGN["text_primary"])
+            self.icon_container.configure(
+                fg_color=DESIGN["bg_tertiary"],
+                border_color=DESIGN["accent_primary"]
+            )
+        elif state == "complete":
+            self.icon.configure(text="✓", text_color=DESIGN["success"])
+            self.label.configure(text_color=DESIGN["text_secondary"])
+            self.icon_container.configure(
+                fg_color=DESIGN["success"],
+                border_color=DESIGN["success"]
+            )
+
 
 class AppWindow(ctk.CTk):
     def __init__(self):
         super().__init__()
+        
+        # Window configuration
         self.title("Smart Macro Station")
-        self.geometry("1100x850")
+        self.geometry("1400x900")
+        self.configure(fg_color=DESIGN["bg_primary"])
         
-        # --- OLLAMA STATUS INDICATOR ---
-        self.status_frame = ctk.CTkFrame(self, height=30)
-        self.status_frame.pack(fill="x", padx=10, pady=(10, 0))
+        # Make window look premium
+        try:
+            # Attempt to remove title bar for custom chrome (optional)
+            # self.overrideredirect(True)
+            pass
+        except:
+            pass
         
-        ctk.CTkLabel(self.status_frame, text="Ollama Status:", font=("Arial", 11)).pack(side="left", padx=10)
-        self.ollama_status_label = ctk.CTkLabel(self.status_frame, text="● Checking...", text_color="orange", font=("Arial", 11, "bold"))
-        self.ollama_status_label.pack(side="left")
-        
-        # Check Ollama status
-        self.check_ollama_status()
-
-        # --- TABS LAYOUT ---
-        self.tab_view = ctk.CTkTabview(self)
-        self.tab_view.pack(fill="both", expand=True, padx=20, pady=20)
-
-        # Create Tabs
-        self.tab_process = self.tab_view.add("Smart Process")
-        self.tab_ppt = self.tab_view.add("PPT Maker")        # <--- NEW TAB
-        self.tab_pdf = self.tab_view.add("Smart PDF Writer") # <--- NEW TAB
-        self.tab_enhance = self.tab_view.add("AI Enhance")   # <--- AI ENRICHMENT TAB
-        self.tab_fill = self.tab_view.add("Smart Fill")
-        self.tab_recorder = self.tab_view.add("Action Recorder")
-        self.tab_dir = self.tab_view.add("Directory Maker")
-
-       # Initialize New Engines
+        # --- LOGIC INITIALIZATION ---
         self.ppt_engine = PPTGenerator()
         self.ppt_enricher = PPTEnricher()
         self.pdf_engine = PDFAgent()
-
-        # Setup Content for each Tab
-        self.setup_process_tab()
-        self.setup_ppt_ui()         # <--- NEW SETUP
-        self.setup_pdf_ui()         # <--- NEW SETUP
-        self.setup_enhance_tab()    # <--- AI ENHANCE SETUP
-        self.setup_fill_tab()
-        self.setup_recorder_tab()
-        self.setup_dir_tab()
-
-    # ========================================================
-    # TAB 1: SMART PROCESS (File Automation)
-    # ========================================================
-    def setup_process_tab(self):
-        frame = self.tab_process
         
-        # 1. Header & Macro Selector
-        top_frame = ctk.CTkFrame(frame, fg_color="transparent")
-        top_frame.pack(fill="x", pady=10)
+        # --- MAIN LAYOUT ---
+        self.grid_columnconfigure(0, weight=0)  # Sidebar
+        self.grid_columnconfigure(1, weight=1)  # Content
+        self.grid_rowconfigure(0, weight=1)
         
-        ctk.CTkLabel(top_frame, text="Instruction:", font=("Arial", 14, "bold")).pack(side="left")
+        # Build UI
+        self.setup_sidebar()
+        self.setup_content_area()
         
-        # Load macros into dropdown
-        macro_names = ["Custom"] + list(load_macros().keys())
-        self.macro_combo = ctk.CTkComboBox(top_frame, values=macro_names, command=self.load_macro_choice)
-        self.macro_combo.pack(side="right", padx=10)
-        ctk.CTkLabel(top_frame, text="Load Macro:").pack(side="right")
-
-        # 2. Instruction Input
-        self.input_instruction = ctk.CTkEntry(frame, placeholder_text="E.g., 'Summarize this' or 'Format as Invoice'", height=40)
-        self.input_instruction.pack(fill="x", pady=5)
+        # Initialize views
+        self.frames = {}
+        self.nav_buttons = {}
+        self.init_all_views()
         
-        # Save Macro Button
-        btn_save_macro = ctk.CTkButton(frame, text="Save as Macro", width=100, fg_color="gray", command=self.save_current_macro)
-        btn_save_macro.pack(anchor="e", pady=5)
-
-        # 3. File Selection
-        self.btn_select = ctk.CTkButton(frame, text="Select File (Docx, Xlsx, PPT, PDF)", command=self.select_file, height=40)
-        self.btn_select.pack(fill="x", pady=10)
+        # Show default view
+        self.select_view("Smart Process")
         
-        self.lbl_file = ctk.CTkLabel(frame, text="No file selected", text_color="gray")
-        self.lbl_file.pack()
-
-        # 4. Progress Bar
-        self.progress = ctk.CTkProgressBar(frame, orientation="horizontal")
-        self.progress.set(0)
-        self.progress.pack(fill="x", pady=20)
+        # Check Ollama
+        self.check_ollama_status()
+    
+    
+    # =====================================================
+    # SIDEBAR - Premium Navigation
+    # =====================================================
+    def setup_sidebar(self):
+        self.sidebar = ctk.CTkFrame(
+            self,
+            fg_color=DESIGN["bg_secondary"],
+            corner_radius=0,
+            width=280,
+            border_width=0
+        )
+        self.sidebar.grid(row=0, column=0, sticky="nsew")
+        self.sidebar.grid_propagate(False)
         
-        # 5. Run Button
-        self.btn_run = ctk.CTkButton(frame, text="▶ RUN ACTION", fg_color="green", height=50, command=self.start_processing)
-        self.btn_run.pack(fill="x", pady=10)
-
-        # 6. Result Log
-        self.txt_log = ctk.CTkTextbox(frame, height=150)
-        self.txt_log.pack(fill="x", pady=10)
-        self.txt_log.insert("0.0", "System Ready...\n")
-
-    def select_file(self):
-        file_types = [
-            ("All Supported", "*.docx;*.xlsx;*.pptx;*.pdf"),
-            ("Word", "*.docx"), ("Excel", "*.xlsx"), 
-            ("PowerPoint", "*.pptx"), ("PDF", "*.pdf")
+        # Logo section with gradient effect
+        logo_section = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        logo_section.pack(pady=(40, 30), padx=24)
+        
+        # App icon (you can replace with an image)
+        icon_frame = ctk.CTkFrame(
+            logo_section,
+            width=48,
+            height=48,
+            corner_radius=12,
+            fg_color=DESIGN["accent_primary"],
+            border_width=0
+        )
+        icon_frame.pack(pady=(0, 12))
+        icon_frame.pack_propagate(False)
+        
+        icon_label = ctk.CTkLabel(
+            icon_frame,
+            text="⚡",
+            font=("Arial", 24)
+        )
+        icon_label.place(relx=0.5, rely=0.5, anchor="center")
+        
+        # App title
+        title = ctk.CTkLabel(
+            logo_section,
+            text="Macro Station",
+            font=(DESIGN["font_display"][0], 22, "bold"),
+            text_color=DESIGN["text_primary"]
+        )
+        title.pack()
+        
+        subtitle = ctk.CTkLabel(
+            logo_section,
+            text="AI Automation Suite",
+            font=(DESIGN["font_body"][0], 12),
+            text_color=DESIGN["text_tertiary"]
+        )
+        subtitle.pack(pady=(2, 0))
+        
+        # Navigation menu
+        nav_label = ctk.CTkLabel(
+            self.sidebar,
+            text="WORKSPACE",
+            font=(DESIGN["font_body"][0], 10, "bold"),
+            text_color=DESIGN["text_disabled"],
+            anchor="w"
+        )
+        nav_label.pack(fill="x", padx=24, pady=(20, 12))
+        
+        self.nav_container = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        self.nav_container.pack(fill="x", padx=16)
+        
+        # Status badge at bottom
+        ctk.CTkFrame(self.sidebar, fg_color="transparent").pack(expand=True)
+        
+        self.status_badge = StatusBadge(self.sidebar)
+        self.status_badge.pack(side="bottom", fill="x", padx=20, pady=30)
+    
+    
+    def create_nav_button(self, name, icon="○"):
+        """Create a beautiful navigation button"""
+        btn_frame = ctk.CTkFrame(
+            self.nav_container,
+            fg_color="transparent",
+            height=44
+        )
+        btn_frame.pack(fill="x", pady=1)
+        
+        btn = ctk.CTkButton(
+            btn_frame,
+            text=f"  {icon}  {name}",
+            anchor="w",
+            fg_color="transparent",
+            hover_color=DESIGN["bg_hover"],
+            text_color=DESIGN["text_secondary"],
+            font=(DESIGN["font_body"][0], 13, "bold"),
+            height=44,
+            corner_radius=8,
+            border_width=0,
+            command=lambda: self.select_view(name)
+        )
+        btn.pack(fill="both", expand=True, padx=8)
+        
+        self.nav_buttons[name] = btn
+    
+    
+    def select_view(self, name):
+        """Switch views with smooth transition"""
+        # Hide all frames
+        for frame in self.frames.values():
+            frame.grid_forget()
+        
+        # Show selected frame
+        if name in self.frames:
+            self.frames[name].grid(row=0, column=0, sticky="nsew")
+        
+        # Update navigation buttons
+        for btn_name, btn in self.nav_buttons.items():
+            if btn_name == name:
+                btn.configure(
+                    fg_color=DESIGN["accent_primary"],
+                    text_color=DESIGN["text_primary"],
+                    hover_color=DESIGN["accent_secondary"]
+                )
+            else:
+                btn.configure(
+                    fg_color="transparent",
+                    text_color=DESIGN["text_secondary"],
+                    hover_color=DESIGN["bg_hover"]
+                )
+    
+    
+    # =====================================================
+    # CONTENT AREA
+    # =====================================================
+    def setup_content_area(self):
+        self.content_area = ctk.CTkFrame(
+            self,
+            fg_color="transparent",
+            corner_radius=0
+        )
+        self.content_area.grid(row=0, column=1, sticky="nsew")
+        self.content_area.grid_columnconfigure(0, weight=1)
+        self.content_area.grid_rowconfigure(0, weight=1)
+    
+    
+    def init_all_views(self):
+        """Initialize all view frames"""
+        views = [
+            ("Smart Process", "⚙️", self.setup_process_view),
+            ("PPT Maker", "📊", self.setup_ppt_view),
+            ("Smart PDF", "📄", self.setup_pdf_view),
+            ("AI Enhance", "✨", self.setup_enhance_view),
+            ("Smart Fill", "📝", self.setup_fill_view),
+            ("Recorder", "🎙️", self.setup_recorder_view),
+            ("Directory", "📁", self.setup_dir_view),
         ]
+        
+        for name, icon, setup_func in views:
+            self.create_nav_button(name, icon)
+            frame = ctk.CTkFrame(self.content_area, fg_color="transparent")
+            self.frames[name] = frame
+            setup_func(frame)
+    
+    
+    # =====================================================
+    # VIEW 1: SMART PROCESS (Redesigned)
+    # =====================================================
+    def setup_process_view(self, frame):
+        # Container with max width for better UX
+        container = ctk.CTkFrame(frame, fg_color="transparent")
+        container.pack(fill="both", expand=True, padx=40, pady=40)
+        
+        # Page header
+        header = ctk.CTkFrame(container, fg_color="transparent")
+        header.pack(fill="x", pady=(0, 32))
+        
+        title = ctk.CTkLabel(
+            header,
+            text="Smart Process",
+            font=(DESIGN["font_display"][0], 28, "bold"),
+            text_color=DESIGN["text_primary"],
+            anchor="w"
+        )
+        title.pack(side="left")
+        
+        # Two-column layout
+        content_grid = ctk.CTkFrame(container, fg_color="transparent")
+        content_grid.pack(fill="both", expand=True)
+        content_grid.grid_columnconfigure(0, weight=2)
+        content_grid.grid_columnconfigure(1, weight=1)
+        content_grid.grid_rowconfigure(0, weight=1)
+        
+        # === LEFT COLUMN: Configuration ===
+        left_card = ModernCard(content_grid, title="Configuration")
+        left_card.grid(row=0, column=0, sticky="nsew", padx=(0, 20))
+        
+        form = ctk.CTkFrame(left_card, fg_color="transparent")
+        form.pack(fill="both", expand=True, padx=24, pady=20)
+        
+        # Macro selector
+        macro_label = ctk.CTkLabel(
+            form,
+            text="Saved Macros",
+            font=(DESIGN["font_body"][0], 12, "bold"),
+            text_color=DESIGN["text_secondary"],
+            anchor="w"
+        )
+        macro_label.pack(fill="x", pady=(0, 8))
+        
+        macro_names = ["Custom"] + list(load_macros().keys())
+        self.macro_combo = ctk.CTkComboBox(
+            form,
+            values=macro_names,
+            command=self.load_macro_choice,
+            fg_color=DESIGN["bg_input"],
+            border_color=DESIGN["border_subtle"],
+            button_color=DESIGN["accent_primary"],
+            button_hover_color=DESIGN["accent_secondary"],
+            dropdown_fg_color=DESIGN["bg_secondary"],
+            height=44,
+            corner_radius=8,
+            font=(DESIGN["font_body"][0], 13)
+        )
+        self.macro_combo.pack(fill="x", pady=(0, 24))
+        
+        # Instruction input
+        inst_label = ctk.CTkLabel(
+            form,
+            text="AI Instruction",
+            font=(DESIGN["font_body"][0], 12, "bold"),
+            text_color=DESIGN["text_secondary"],
+            anchor="w"
+        )
+        inst_label.pack(fill="x", pady=(0, 8))
+        
+        self.input_instruction = ModernInput(
+            form,
+            placeholder_text="e.g., Summarize this document in 3 bullet points",
+            height=48
+        )
+        self.input_instruction.pack(fill="x", pady=(0, 12))
+        
+        save_macro_btn = ModernButton(
+            form,
+            text="💾  Save as Macro",
+            style="ghost",
+            height=36,
+            command=self.save_current_macro
+        )
+        save_macro_btn.pack(anchor="e")
+        
+        # File selection
+        file_label = ctk.CTkLabel(
+            form,
+            text="Target File",
+            font=(DESIGN["font_body"][0], 12, "bold"),
+            text_color=DESIGN["text_secondary"],
+            anchor="w"
+        )
+        file_label.pack(fill="x", pady=(24, 8))
+        
+        file_selector = ctk.CTkFrame(form, fg_color=DESIGN["bg_input"], corner_radius=8, height=60)
+        file_selector.pack(fill="x", pady=(0, 24))
+        file_selector.pack_propagate(False)
+        
+        self.btn_select = ModernButton(
+            file_selector,
+            text="📂  Browse",
+            style="secondary",
+            command=self.select_file,
+            width=120
+        )
+        self.btn_select.pack(side="left", padx=12, pady=12)
+        
+        self.lbl_file = ctk.CTkLabel(
+            file_selector,
+            text="No file selected",
+            font=(DESIGN["font_body"][0], 13),
+            text_color=DESIGN["text_disabled"],
+            anchor="w"
+        )
+        self.lbl_file.pack(side="left", fill="x", expand=True, padx=(0, 12))
+        
+        # Progress bar
+        self.progress = ctk.CTkProgressBar(
+            form,
+            progress_color=DESIGN["accent_primary"],
+            fg_color=DESIGN["bg_input"],
+            corner_radius=4,
+            height=6
+        )
+        self.progress.set(0)
+        self.progress.pack(fill="x", pady=(0, 16))
+        
+        # Execute button
+        self.btn_run = ModernButton(
+            form,
+            text="⚡  Execute Automation",
+            style="primary",
+            height=48,
+            font=(DESIGN["font_body"][0], 14, "bold"),
+            command=self.start_processing
+        )
+        self.btn_run.pack(fill="x")
+        
+        # === RIGHT COLUMN: Activity Log ===
+        right_card = ModernCard(content_grid, title="Activity Log")
+        right_card.grid(row=0, column=1, sticky="nsew")
+        
+        log_container = ctk.CTkFrame(right_card, fg_color="transparent")
+        log_container.pack(fill="both", expand=True, padx=24, pady=20)
+        
+        self.txt_log = ctk.CTkTextbox(
+            log_container,
+            font=(DESIGN["font_mono"][0], 11),
+            fg_color=DESIGN["bg_input"],
+            border_width=1,
+            border_color=DESIGN["border_subtle"],
+            corner_radius=8,
+            text_color=DESIGN["text_secondary"]
+        )
+        self.txt_log.pack(fill="both", expand=True)
+        self.txt_log.insert("0.0", "⚡ System initialized and ready\n")
+    
+    
+    # =====================================================
+    # VIEW 2: PPT MAKER (Redesigned)
+    # =====================================================
+    def setup_ppt_view(self, frame):
+        container = ctk.CTkFrame(frame, fg_color="transparent")
+        container.pack(fill="both", expand=True, padx=40, pady=40)
+        
+        # Centered content with max width
+        center = ctk.CTkFrame(container, fg_color="transparent")
+        center.pack(expand=True)
+        
+        # Hero section
+        hero = ctk.CTkFrame(center, fg_color="transparent")
+        hero.pack(pady=(0, 40))
+        
+        icon_bg = ctk.CTkFrame(
+            hero,
+            width=80,
+            height=80,
+            corner_radius=40,
+            fg_color=DESIGN["bg_tertiary"],
+            border_width=3,
+            border_color=DESIGN["accent_primary"]
+        )
+        icon_bg.pack()
+        icon_bg.pack_propagate(False)
+        
+        icon = ctk.CTkLabel(icon_bg, text="📊", font=("Arial", 40))
+        icon.place(relx=0.5, rely=0.5, anchor="center")
+        
+        title = ctk.CTkLabel(
+            hero,
+            text="Presentation Generator",
+            font=(DESIGN["font_display"][0], 32, "bold"),
+            text_color=DESIGN["text_primary"]
+        )
+        title.pack(pady=(20, 8))
+        
+        subtitle = ctk.CTkLabel(
+            hero,
+            text="AI-powered slide creation with research and structure",
+            font=(DESIGN["font_body"][0], 14),
+            text_color=DESIGN["text_tertiary"]
+        )
+        subtitle.pack()
+        
+        # Main card
+        card = ModernCard(center, fg_color=DESIGN["bg_tertiary"])
+        card.pack(fill="x", pady=20)
+        card.configure(width=600)
+        
+        card_inner = ctk.CTkFrame(card, fg_color="transparent")
+        card_inner.pack(fill="x", padx=40, pady=40)
+        
+        # Input
+        input_label = ctk.CTkLabel(
+            card_inner,
+            text="Topic",
+            font=(DESIGN["font_body"][0], 13, "bold"),
+            text_color=DESIGN["text_secondary"],
+            anchor="w"
+        )
+        input_label.pack(fill="x", pady=(0, 10))
+        
+        self.ppt_topic_entry = ModernInput(
+            card_inner,
+            placeholder_text="e.g., The Future of Renewable Energy",
+            height=52
+        )
+        self.ppt_topic_entry.pack(fill="x", pady=(0, 24))
+        
+        # Generate button
+        self.ppt_generate_btn = ModernButton(
+            card_inner,
+            text="✨  Generate Presentation",
+            style="primary",
+            height=52,
+            font=(DESIGN["font_body"][0], 15, "bold"),
+            command=self.start_ppt_generation
+        )
+        self.ppt_generate_btn.pack(fill="x", pady=(0, 32))
+        
+        # Progress steps
+        steps_container = ctk.CTkFrame(
+            card_inner,
+            fg_color=DESIGN["bg_input"],
+            corner_radius=12,
+            border_width=1,
+            border_color=DESIGN["border_subtle"]
+        )
+        steps_container.pack(fill="x")
+        
+        steps_inner = ctk.CTkFrame(steps_container, fg_color="transparent")
+        steps_inner.pack(fill="x", padx=20, pady=20)
+        
+        self.ppt_step_labels = {}
+        steps = [
+            ("step_1", "Researching Content"),
+            ("step_2", "Structuring Arguments"),
+            ("step_3", "Building .PPTX File")
+        ]
+        
+        for i, (key, text) in enumerate(steps):
+            step = ProgressStep(steps_inner, text)
+            step.pack(fill="x", pady=6 if i > 0 else 0)
+            self.ppt_step_labels[key] = step
+        
+        # Status
+        self.ppt_status_label = ctk.CTkLabel(
+            card_inner,
+            text="",
+            font=(DESIGN["font_body"][0], 13, "bold"),
+            text_color=DESIGN["success"]
+        )
+        self.ppt_status_label.pack(pady=(20, 0))
+    
+    
+    # =====================================================
+    # VIEW 3: PDF MAKER (Redesigned)
+    # =====================================================
+    def setup_pdf_view(self, frame):
+        container = ctk.CTkFrame(frame, fg_color="transparent")
+        container.pack(fill="both", expand=True, padx=40, pady=40)
+        
+        center = ctk.CTkFrame(container, fg_color="transparent")
+        center.pack(expand=True)
+        
+        # Hero
+        hero = ctk.CTkFrame(center, fg_color="transparent")
+        hero.pack(pady=(0, 40))
+        
+        icon_bg = ctk.CTkFrame(
+            hero,
+            width=80,
+            height=80,
+            corner_radius=40,
+            fg_color=DESIGN["bg_tertiary"],
+            border_width=3,
+            border_color=DESIGN["danger"]
+        )
+        icon_bg.pack()
+        icon_bg.pack_propagate(False)
+        
+        icon = ctk.CTkLabel(icon_bg, text="📄", font=("Arial", 40))
+        icon.place(relx=0.5, rely=0.5, anchor="center")
+        
+        title = ctk.CTkLabel(
+            hero,
+            text="AI Document Writer",
+            font=(DESIGN["font_display"][0], 32, "bold"),
+            text_color=DESIGN["text_primary"]
+        )
+        title.pack(pady=(20, 8))
+        
+        subtitle = ctk.CTkLabel(
+            hero,
+            text="Generate comprehensive PDFs with AI-powered content",
+            font=(DESIGN["font_body"][0], 14),
+            text_color=DESIGN["text_tertiary"]
+        )
+        subtitle.pack()
+        
+        # Card
+        card = ModernCard(center, fg_color=DESIGN["bg_tertiary"])
+        card.pack(fill="x", pady=20)
+        card.configure(width=600)
+        
+        card_inner = ctk.CTkFrame(card, fg_color="transparent")
+        card_inner.pack(fill="x", padx=40, pady=40)
+        
+        input_label = ctk.CTkLabel(
+            card_inner,
+            text="Document Subject",
+            font=(DESIGN["font_body"][0], 13, "bold"),
+            text_color=DESIGN["text_secondary"],
+            anchor="w"
+        )
+        input_label.pack(fill="x", pady=(0, 10))
+        
+        self.pdf_topic_entry = ModernInput(
+            card_inner,
+            placeholder_text="e.g., Essay on Quantum Computing",
+            height=52
+        )
+        self.pdf_topic_entry.pack(fill="x", pady=(0, 24))
+        
+        self.pdf_btn = ModernButton(
+            card_inner,
+            text="📝  Write & Export PDF",
+            style="danger",
+            height=52,
+            font=(DESIGN["font_body"][0], 15, "bold"),
+            command=self.start_pdf_generation
+        )
+        self.pdf_btn.pack(fill="x", pady=(0, 32))
+        
+        # Steps
+        steps_container = ctk.CTkFrame(
+            card_inner,
+            fg_color=DESIGN["bg_input"],
+            corner_radius=12,
+            border_width=1,
+            border_color=DESIGN["border_subtle"]
+        )
+        steps_container.pack(fill="x")
+        
+        steps_inner = ctk.CTkFrame(steps_container, fg_color="transparent")
+        steps_inner.pack(fill="x", padx=20, pady=20)
+        
+        self.pdf_step_labels = {}
+        steps = [
+            ("step_1", "Generating Content"),
+            ("step_2", "Formatting PDF")
+        ]
+        
+        for i, (key, text) in enumerate(steps):
+            step = ProgressStep(steps_inner, text)
+            step.pack(fill="x", pady=6 if i > 0 else 0)
+            self.pdf_step_labels[key] = step
+        
+        self.pdf_status_label = ctk.CTkLabel(
+            card_inner,
+            text="",
+            font=(DESIGN["font_body"][0], 13, "bold"),
+            text_color=DESIGN["success"]
+        )
+        self.pdf_status_label.pack(pady=(20, 0))
+    
+    
+    # =====================================================
+    # VIEW 4: AI ENHANCE (Redesigned)
+    # =====================================================
+    def setup_enhance_view(self, frame):
+        container = ctk.CTkFrame(frame, fg_color="transparent")
+        container.pack(fill="both", expand=True, padx=40, pady=40)
+        
+        # Header
+        header = ctk.CTkFrame(container, fg_color="transparent")
+        header.pack(fill="x", pady=(0, 32))
+        
+        title = ctk.CTkLabel(
+            header,
+            text="AI Enhancement Studio",
+            font=(DESIGN["font_display"][0], 28, "bold"),
+            text_color=DESIGN["text_primary"]
+        )
+        title.pack(side="left")
+        
+        # Grid layout
+        grid = ctk.CTkFrame(container, fg_color="transparent")
+        grid.pack(fill="both", expand=True)
+        grid.grid_columnconfigure(0, weight=1)
+        grid.grid_columnconfigure(1, weight=1)
+        grid.grid_rowconfigure(0, weight=1)
+        
+        # === LEFT: Settings ===
+        left_card = ModernCard(grid, title="Settings")
+        left_card.grid(row=0, column=0, sticky="nsew", padx=(0, 20))
+        
+        settings = ctk.CTkFrame(left_card, fg_color="transparent")
+        settings.pack(fill="both", expand=True, padx=24, pady=20)
+        
+        # File upload
+        upload_btn = ModernButton(
+            settings,
+            text="📂  Upload File",
+            style="secondary",
+            height=48,
+            command=self.select_enhance_file
+        )
+        upload_btn.pack(fill="x", pady=(0, 8))
+        
+        self.enhance_lbl_file = ctk.CTkLabel(
+            settings,
+            text="No file selected",
+            font=(DESIGN["font_body"][0], 12),
+            text_color=DESIGN["text_disabled"]
+        )
+        self.enhance_lbl_file.pack(pady=(0, 24))
+        
+        # Options section
+        options_label = ctk.CTkLabel(
+            settings,
+            text="Enhancement Options",
+            font=(DESIGN["font_body"][0], 12, "bold"),
+            text_color=DESIGN["text_secondary"],
+            anchor="w"
+        )
+        options_label.pack(fill="x", pady=(0, 16))
+        
+        # Checkboxes
+        self.enhance_improve_text = ctk.CTkCheckBox(
+            settings,
+            text="Improve Grammar & Clarity",
+            font=(DESIGN["font_body"][0], 13),
+            fg_color=DESIGN["accent_primary"],
+            hover_color=DESIGN["accent_secondary"],
+            border_color=DESIGN["border_medium"],
+            text_color=DESIGN["text_primary"]
+        )
+        self.enhance_improve_text.pack(anchor="w", pady=6)
+        self.enhance_improve_text.select()
+        
+        self.enhance_auto_format = ctk.CTkCheckBox(
+            settings,
+            text="Auto-Format Styling",
+            font=(DESIGN["font_body"][0], 13),
+            fg_color=DESIGN["accent_primary"],
+            hover_color=DESIGN["accent_secondary"],
+            border_color=DESIGN["border_medium"],
+            text_color=DESIGN["text_primary"]
+        )
+        self.enhance_auto_format.pack(anchor="w", pady=6)
+        
+        self.enhance_add_summaries = ctk.CTkCheckBox(
+            settings,
+            text="Add Executive Summary",
+            font=(DESIGN["font_body"][0], 13),
+            fg_color=DESIGN["accent_primary"],
+            hover_color=DESIGN["accent_secondary"],
+            border_color=DESIGN["border_medium"],
+            text_color=DESIGN["text_primary"]
+        )
+        self.enhance_add_summaries.pack(anchor="w", pady=6)
+        
+        self.enhance_fix_consistency = ctk.CTkCheckBox(
+            settings,
+            text="Fix Formatting Consistency",
+            font=(DESIGN["font_body"][0], 13),
+            fg_color=DESIGN["accent_primary"],
+            hover_color=DESIGN["accent_secondary"],
+            border_color=DESIGN["border_medium"],
+            text_color=DESIGN["text_primary"]
+        )
+        self.enhance_fix_consistency.pack(anchor="w", pady=6)
+        
+        # Style selector
+        style_label = ctk.CTkLabel(
+            settings,
+            text="Writing Tone",
+            font=(DESIGN["font_body"][0], 12, "bold"),
+            text_color=DESIGN["text_secondary"],
+            anchor="w"
+        )
+        style_label.pack(fill="x", pady=(24, 8))
+        
+        self.enhance_style = ctk.CTkComboBox(
+            settings,
+            values=["Professional", "Casual", "Academic", "Technical"],
+            fg_color=DESIGN["bg_input"],
+            border_color=DESIGN["border_subtle"],
+            button_color=DESIGN["accent_primary"],
+            dropdown_fg_color=DESIGN["bg_secondary"],
+            height=44,
+            corner_radius=8
+        )
+        self.enhance_style.pack(fill="x", pady=(0, 24))
+        
+        # Action buttons
+        ctk.CTkFrame(settings, fg_color="transparent").pack(expand=True)
+        
+        self.enhance_btn_preview = ModernButton(
+            settings,
+            text="🔍  Analyze Suggestions",
+            style="ghost",
+            command=self.preview_enhancements
+        )
+        self.enhance_btn_preview.pack(fill="x", pady=(0, 12))
+        
+        self.enhance_btn_apply = ModernButton(
+            settings,
+            text="✨  Apply Enhancements",
+            style="success",
+            height=48,
+            command=self.apply_enhancements
+        )
+        self.enhance_btn_apply.pack(fill="x")
+        
+        # === RIGHT: Output ===
+        right_card = ModernCard(grid, title="Analysis & Output")
+        right_card.grid(row=0, column=1, sticky="nsew")
+        
+        output = ctk.CTkFrame(right_card, fg_color="transparent")
+        output.pack(fill="both", expand=True, padx=24, pady=20)
+        
+        self.enhance_progress = ctk.CTkProgressBar(
+            output,
+            progress_color=DESIGN["success"],
+            fg_color=DESIGN["bg_input"],
+            height=6,
+            corner_radius=3
+        )
+        self.enhance_progress.set(0)
+        self.enhance_progress.pack(fill="x", pady=(0, 12))
+        
+        self.enhance_status = ctk.CTkLabel(
+            output,
+            text="Ready to enhance",
+            font=(DESIGN["font_body"][0], 12),
+            text_color=DESIGN["text_tertiary"]
+        )
+        self.enhance_status.pack(pady=(0, 16))
+        
+        self.enhance_log = ctk.CTkTextbox(
+            output,
+            font=(DESIGN["font_mono"][0], 11),
+            fg_color=DESIGN["bg_input"],
+            border_width=1,
+            border_color=DESIGN["border_subtle"],
+            corner_radius=8,
+            text_color=DESIGN["text_secondary"]
+        )
+        self.enhance_log.pack(fill="both", expand=True)
+    
+    
+    # =====================================================
+    # VIEW 5: SMART FILL (Redesigned)
+    # =====================================================
+    def setup_fill_view(self, frame):
+        container = ctk.CTkFrame(frame, fg_color="transparent")
+        container.pack(fill="both", expand=True, padx=40, pady=40)
+        
+        # Header
+        header = ctk.CTkFrame(container, fg_color="transparent")
+        header.pack(fill="x", pady=(0, 32))
+        
+        title = ctk.CTkLabel(
+            header,
+            text="Smart Fill",
+            font=(DESIGN["font_display"][0], 28, "bold"),
+            text_color=DESIGN["text_primary"]
+        )
+        title.pack(side="left")
+        
+        subtitle = ctk.CTkLabel(
+            header,
+            text="Generate documents from data and templates",
+            font=(DESIGN["font_body"][0], 14),
+            text_color=DESIGN["text_tertiary"]
+        )
+        subtitle.pack(side="left", padx=(20, 0))
+        
+        # Three-column layout
+        grid = ctk.CTkFrame(container, fg_color="transparent")
+        grid.pack(fill="both", expand=True)
+        grid.grid_columnconfigure((0, 1, 2), weight=1)
+        grid.grid_rowconfigure(0, weight=1)
+        
+        # Column 1: Data
+        card1 = ModernCard(grid, title="1. Source Data")
+        card1.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        
+        self.txt_data = ctk.CTkTextbox(
+            card1,
+            font=(DESIGN["font_mono"][0], 12),
+            fg_color=DESIGN["bg_input"],
+            border_width=1,
+            border_color=DESIGN["border_subtle"],
+            corner_radius=8
+        )
+        self.txt_data.pack(fill="both", expand=True, padx=24, pady=20)
+        
+        # Column 2: Template
+        card2 = ModernCard(grid, title="2. Template")
+        card2.grid(row=0, column=1, sticky="nsew", padx=10)
+        
+        self.txt_template = ctk.CTkTextbox(
+            card2,
+            font=(DESIGN["font_mono"][0], 12),
+            fg_color=DESIGN["bg_input"],
+            border_width=1,
+            border_color=DESIGN["border_subtle"],
+            corner_radius=8
+        )
+        self.txt_template.pack(fill="both", expand=True, padx=24, pady=20)
+        
+        # Column 3: Output
+        card3 = ModernCard(grid, title="3. Generated Output")
+        card3.grid(row=0, column=2, sticky="nsew", padx=(10, 0))
+        
+        output_controls = ctk.CTkFrame(card3, fg_color="transparent")
+        output_controls.pack(fill="x", padx=24, pady=(20, 0))
+        
+        self.txt_ref = ModernInput(
+            output_controls,
+            placeholder_text="Style reference (optional)",
+            height=44
+        )
+        self.txt_ref.pack(fill="x", pady=(0, 16))
+        
+        self.btn_fill = ModernButton(
+            output_controls,
+            text="✨  Generate Document",
+            style="primary",
+            height=48,
+            command=self.run_smart_fill
+        )
+        self.btn_fill.pack(fill="x", pady=(0, 16))
+        
+        self.txt_fill_result = ctk.CTkTextbox(
+            card3,
+            font=(DESIGN["font_mono"][0], 11),
+            fg_color=DESIGN["bg_input"],
+            border_width=1,
+            border_color=DESIGN["border_subtle"],
+            corner_radius=8
+        )
+        self.txt_fill_result.pack(fill="both", expand=True, padx=24, pady=(0, 20))
+    
+    
+    # =====================================================
+    # VIEW 6 & 7: Recorder & Directory
+    # =====================================================
+    def setup_recorder_view(self, frame):
+        container = ctk.CTkFrame(frame, fg_color="transparent")
+        container.pack(fill="both", expand=True, padx=40, pady=40)
+        
+        card = ModernCard(container, title="Voice Recorder")
+        card.pack(fill="both", expand=True)
+        
+        self.recorder_ui = RecorderTab(card)
+        self.recorder_ui.pack(fill="both", expand=True, padx=24, pady=20)
+    
+    
+    def setup_dir_view(self, frame):
+        container = ctk.CTkFrame(frame, fg_color="transparent")
+        container.pack(fill="both", expand=True, padx=40, pady=40)
+        
+        # Header
+        header = ctk.CTkFrame(container, fg_color="transparent")
+        header.pack(fill="x", pady=(0, 32))
+        
+        title = ctk.CTkLabel(
+            header,
+            text="Directory Generator",
+            font=(DESIGN["font_display"][0], 28, "bold"),
+            text_color=DESIGN["text_primary"]
+        )
+        title.pack(side="left")
+        
+        # Card
+        card = ModernCard(container)
+        card.pack(fill="both", expand=True)
+        
+        inner = ctk.CTkFrame(card, fg_color="transparent")
+        inner.pack(fill="both", expand=True, padx=24, pady=20)
+        
+        # Instructions
+        instructions = ctk.CTkLabel(
+            inner,
+            text="Paste your directory tree structure below:",
+            font=(DESIGN["font_body"][0], 13),
+            text_color=DESIGN["text_secondary"],
+            anchor="w"
+        )
+        instructions.pack(fill="x", pady=(0, 12))
+        
+        # Tree input
+        self.txt_tree = ctk.CTkTextbox(
+            inner,
+            font=(DESIGN["font_mono"][0], 12),
+            fg_color=DESIGN["bg_input"],
+            border_width=1,
+            border_color=DESIGN["border_subtle"],
+            corner_radius=8
+        )
+        self.txt_tree.pack(fill="both", expand=True, pady=(0, 20))
+        
+        # Bottom controls
+        controls = ctk.CTkFrame(inner, fg_color="transparent")
+        controls.pack(fill="x")
+        
+        self.btn_select_dir = ModernButton(
+            controls,
+            text="📁  Select Destination",
+            style="secondary",
+            command=self.select_target_dir
+        )
+        self.btn_select_dir.pack(side="left", padx=(0, 12))
+        
+        self.lbl_target = ctk.CTkLabel(
+            controls,
+            text="Current directory",
+            font=(DESIGN["font_body"][0], 13),
+            text_color=DESIGN["text_disabled"]
+        )
+        self.lbl_target.pack(side="left", fill="x", expand=True)
+        
+        self.btn_create_tree = ModernButton(
+            controls,
+            text="🚀  Create Folders",
+            style="success",
+            command=self.generate_tree
+        )
+        self.btn_create_tree.pack(side="right")
+    
+    
+    # =====================================================
+    # LOGIC METHODS (Keep your original logic)
+    # =====================================================
+    
+    def select_file(self):
+        file_types = [("All Supported", "*.docx;*.xlsx;*.pptx;*.pdf")]
         path = filedialog.askopenfilename(filetypes=file_types)
         if path:
             self.selected_file = path
-            self.lbl_file.configure(text=f"Selected: {os.path.basename(path)}")
-            self.log(f"Selected: {path}")
-
+            filename = os.path.basename(path)
+            self.lbl_file.configure(text=filename, text_color=DESIGN["text_primary"])
+            self.log(f"✓ Selected: {filename}")
+    
     def start_processing(self):
         if not hasattr(self, 'selected_file'):
-            self.log("Please select a file first.")
+            self.log("⚠️ Please select a file first")
             return
-
         instruction = self.input_instruction.get()
-        self.progress.start() # Makes the bar pulse
-        self.btn_run.configure(state="disabled")
-        
-        # Run inside a thread to keep GUI responsive
-        threading.Thread(target=self.run_ai_logic, args=(self.selected_file, instruction)).start()
-
+        self.progress.start()
+        self.btn_run.configure(state="disabled", text="Processing...")
+        threading.Thread(target=self.run_ai_logic, args=(self.selected_file, instruction), daemon=True).start()
+    
     def run_ai_logic(self, path, instruction):
-        self.log(f"Processing {os.path.basename(path)}...")
+        self.log(f"⚙️ Processing {os.path.basename(path)}...")
         result = None
-        
         try:
             if path.endswith(".docx"):
                 result = process_word_document(path, instruction)
             elif path.endswith(".xlsx"):
                 result = process_excel_file(path, instruction)
-            # Note: process_ppt_file might need to be imported if you have a separate one for 'editing' vs 'creating'
-            # elif path.endswith(".pptx"):
-            #    result = process_ppt_file(path, instruction)
             else:
-                result = "Error: Unsupported file type for this tab."
+                result = "Error: Unsupported file type"
         except Exception as e:
-            result = f"Critical Error: {e}"
-
+            result = f"Error: {str(e)}"
         self.after(0, lambda: self.finish_processing(result))
-
+    
     def finish_processing(self, result):
         self.progress.stop()
-        self.progress.set(1) # Full bar
-        self.btn_run.configure(state="normal")
-        
+        self.progress.set(1)
+        self.btn_run.configure(state="normal", text="⚡  Execute Automation")
         if result and "Error" not in result:
-            self.log(f"✅ Success! Saved to: {result}")
+            self.log(f"✅ Success! Output: {result}")
         else:
             self.log(f"❌ {result}")
-
+    
     def log(self, msg):
-        self.txt_log.insert(END, f"{msg}\n")
+        timestamp = time.strftime("%H:%M:%S")
+        self.txt_log.insert(END, f"[{timestamp}] {msg}\n")
         self.txt_log.see(END)
-
+    
     def save_current_macro(self):
-        dialog = ctk.CTkInputDialog(text="Name this Macro:", title="Save Macro")
+        dialog = ctk.CTkInputDialog(text="Macro name:", title="Save Macro")
         name = dialog.get_input()
         instruction = self.input_instruction.get()
         if name and instruction:
             save_macro(name, instruction)
             new_values = ["Custom"] + list(load_macros().keys())
             self.macro_combo.configure(values=new_values)
-            self.log(f"Macro '{name}' saved!")
-
+            self.log(f"💾 Saved macro: {name}")
+    
     def load_macro_choice(self, choice):
         macros = load_macros()
         if choice in macros:
             self.input_instruction.delete(0, END)
             self.input_instruction.insert(0, macros[choice])
-
-    # ========================================================
-    # TAB 2: PPT MAKER (NEW)
-    # ========================================================
-    def setup_ppt_ui(self):
-        # 1. Input Section
-        self.ppt_topic_label = ctk.CTkLabel(self.tab_ppt, text="Enter Presentation Topic:", font=("Arial", 16))
-        self.ppt_topic_label.pack(pady=10)
-
-        self.ppt_topic_entry = ctk.CTkEntry(self.tab_ppt, width=400, placeholder_text="e.g., The Future of AI in Education")
-        self.ppt_topic_entry.pack(pady=5)
-
-        self.ppt_generate_btn = ctk.CTkButton(self.tab_ppt, text="Generate PPT", command=self.start_ppt_generation)
-        self.ppt_generate_btn.pack(pady=20)
-
-        # 2. Progress Section (Checklist)
-        self.ppt_steps_frame = ctk.CTkFrame(self.tab_ppt)
-        self.ppt_steps_frame.pack(pady=10, fill="x", padx=50)
-
-        # Labels
-        self.ppt_step_labels = {
-            "step_1": self.create_step_label(self.ppt_steps_frame, "1. AI Researching Content..."),
-            "step_2": self.create_step_label(self.ppt_steps_frame, "2. Structuring Slides..."),
-            "step_3": self.create_step_label(self.ppt_steps_frame, "3. Creating PowerPoint File..."),
-        }
-        
-        self.ppt_status_label = ctk.CTkLabel(self.tab_ppt, text="", text_color="green")
-        self.ppt_status_label.pack(pady=10)
-
+            self.log(f"📋 Loaded macro: {choice}")
+    
+    # PPT Logic
     def start_ppt_generation(self):
         topic = self.ppt_topic_entry.get()
-        if not topic: return
-        
-        self.ppt_status_label.configure(text="Starting...")
-        self.ppt_generate_btn.configure(state="disabled")
-        for key, lbl in self.ppt_step_labels.items():
-            lbl.configure(text_color="gray", text=lbl.cget("text").replace("🟢", "⚪").replace("🔵", "⚪"))
-
+        if not topic:
+            return
+        self.ppt_status_label.configure(text="Starting generation...")
+        self.ppt_generate_btn.configure(state="disabled", text="Generating...")
+        for step in self.ppt_step_labels.values():
+            step.set_state("pending")
         if self.ppt_engine:
-            self.ppt_engine.generate_ppt(topic, self.handle_ppt_progress)
-        else:
-            self.ppt_status_label.configure(text="Error: PPT Engine not loaded", text_color="red")
-
+            threading.Thread(
+                target=lambda: self.ppt_engine.generate_ppt(topic, self.handle_ppt_progress),
+                daemon=True
+            ).start()
+    
     def handle_ppt_progress(self, step_key, status):
         self.after(0, lambda: self._update_ppt_gui_safe(step_key, status))
-
+    
     def _update_ppt_gui_safe(self, step_key, status):
         if step_key == "final":
-            self.ppt_status_label.configure(text=f"Success! {status}")
-            self.ppt_generate_btn.configure(state="normal")
-            return
-        if step_key == "error":
-            self.ppt_status_label.configure(text=f"Error: {status}", text_color="red")
-            self.ppt_generate_btn.configure(state="normal")
-            return
-
-        if step_key in self.ppt_step_labels:
-            lbl = self.ppt_step_labels[step_key]
-            current_text = lbl.cget("text").replace("⚪", "").replace("🟢", "").replace("🔵", "").strip()
+            self.ppt_status_label.configure(text=f"✅ {status}")
+            self.ppt_generate_btn.configure(state="normal", text="✨  Generate Presentation")
+        elif step_key == "error":
+            self.ppt_status_label.configure(text=f"❌ {status}", text_color=DESIGN["danger"])
+            self.ppt_generate_btn.configure(state="normal", text="✨  Generate Presentation")
+        elif step_key in self.ppt_step_labels:
+            step = self.ppt_step_labels[step_key]
             if status == "running":
-                lbl.configure(text=f"🔵 {current_text}", text_color="#3B8ED0")
+                step.set_state("active")
             elif status == "done":
-                lbl.configure(text=f"🟢 {current_text}", text_color="green")
-
-    # ========================================================
-    # TAB 3: SMART PDF WRITER (NEW)
-    # ========================================================
-    def setup_pdf_ui(self):
-        # 1. Input Section
-        label = ctk.CTkLabel(self.tab_pdf, text="What should the document be about?", font=("Arial", 16))
-        label.pack(pady=10)
-
-        self.pdf_topic_entry = ctk.CTkEntry(self.tab_pdf, width=400, placeholder_text="e.g., Essay on Mars Exploration")
-        self.pdf_topic_entry.pack(pady=5)
-
-        self.pdf_btn = ctk.CTkButton(self.tab_pdf, text="Write & Save PDF", command=self.start_pdf_generation, fg_color="#D9534F", hover_color="#C9302C")
-        self.pdf_btn.pack(pady=20)
-
-        # 2. Progress Checklist
-        self.pdf_steps_frame = ctk.CTkFrame(self.tab_pdf)
-        self.pdf_steps_frame.pack(pady=10, fill="x", padx=50)
-
-        self.pdf_step_labels = {
-            "step_1": self.create_step_label(self.pdf_steps_frame, "1. AI Writing Content..."),
-            "step_2": self.create_step_label(self.pdf_steps_frame, "2. Formatting & Saving PDF..."),
-        }
-        
-        self.pdf_status_label = ctk.CTkLabel(self.tab_pdf, text="", text_color="green")
-        self.pdf_status_label.pack(pady=10)
-
+                step.set_state("complete")
+    
+    # PDF Logic
     def start_pdf_generation(self):
         topic = self.pdf_topic_entry.get()
-        if not topic: return
-
-        self.pdf_status_label.configure(text="Processing...")
-        self.pdf_btn.configure(state="disabled")
-        for key, lbl in self.pdf_step_labels.items():
-            lbl.configure(text_color="gray", text=lbl.cget("text").replace("🟢", "⚪").replace("🔵", "⚪"))
-
+        if not topic:
+            return
+        self.pdf_status_label.configure(text="Starting generation...")
+        self.pdf_btn.configure(state="disabled", text="Generating...")
+        for step in self.pdf_step_labels.values():
+            step.set_state("pending")
         if self.pdf_engine:
-            self.pdf_engine.generate_smart_pdf(topic, self.handle_pdf_progress)
-        else:
-             self.pdf_status_label.configure(text="Error: PDF Engine not loaded", text_color="red")
-
+            threading.Thread(
+                target=lambda: self.pdf_engine.generate_smart_pdf(topic, self.handle_pdf_progress),
+                daemon=True
+            ).start()
+    
     def handle_pdf_progress(self, step_key, status):
         self.after(0, lambda: self._update_pdf_gui_safe(step_key, status))
-
+    
     def _update_pdf_gui_safe(self, step_key, status):
         if step_key == "final":
-            self.pdf_status_label.configure(text=f"Success! {status}")
-            self.pdf_btn.configure(state="normal")
-            return
-        if step_key == "error":
-            self.pdf_status_label.configure(text=f"Error: {status}", text_color="red")
-            self.pdf_btn.configure(state="normal")
-            return
-
-        if step_key in self.pdf_step_labels:
-            lbl = self.pdf_step_labels[step_key]
-            txt = lbl.cget("text").replace("⚪", "").replace("🟢", "").replace("🔵", "").strip()
+            self.pdf_status_label.configure(text=f"✅ {status}")
+            self.pdf_btn.configure(state="normal", text="📝  Write & Export PDF")
+        elif step_key == "error":
+            self.pdf_status_label.configure(text=f"❌ {status}", text_color=DESIGN["danger"])
+            self.pdf_btn.configure(state="normal", text="📝  Write & Export PDF")
+        elif step_key in self.pdf_step_labels:
+            step = self.pdf_step_labels[step_key]
             if status == "running":
-                lbl.configure(text=f"🔵 {txt}", text_color="#3B8ED0")
+                step.set_state("active")
             elif status == "done":
-                lbl.configure(text=f"🟢 {txt}", text_color="green")
-
-    # Helper for creating checklist labels
-    def create_step_label(self, parent, text):
-        lbl = ctk.CTkLabel(parent, text=f"⚪ {text}", text_color="gray")
-        lbl.pack(anchor="w", padx=20, pady=5)
-        return lbl
-
-    # ========================================================
-    # TAB 4: AI ENHANCE (Content Enrichment)
-    # ========================================================
-    def setup_enhance_tab(self):
-        frame = self.tab_enhance
-        
-        # Title
-        title_label = ctk.CTkLabel(frame, text="AI-Powered Content Enrichment", font=("Arial", 20, "bold"))
-        title_label.pack(pady=10)
-        
-        # File Selection
-        file_frame = ctk.CTkFrame(frame)
-        file_frame.pack(fill="x", padx=20, pady=10)
-        
-        self.enhance_btn_select = ctk.CTkButton(file_frame, text="Select File to Enhance", command=self.select_enhance_file, height=40)
-        self.enhance_btn_select.pack(fill="x", pady=5)
-        
-        self.enhance_lbl_file = ctk.CTkLabel(file_frame, text="No file selected", text_color="gray")
-        self.enhance_lbl_file.pack(pady=5)
-        
-        # Enhancement Options
-        options_frame = ctk.CTkFrame(frame)
-        options_frame.pack(fill="x", padx=20, pady=10)
-        
-        ctk.CTkLabel(options_frame, text="Enhancement Options:", font=("Arial", 14, "bold")).pack(anchor="w", padx=10, pady=5)
-        
-        # Checkboxes for options
-        self.enhance_improve_text = ctk.CTkCheckBox(options_frame, text="Improve Text Quality (Grammar, Clarity, Style)")
-        self.enhance_improve_text.pack(anchor="w", padx=20, pady=3)
-        self.enhance_improve_text.select()
-        
-        self.enhance_auto_format = ctk.CTkCheckBox(options_frame, text="Auto-Format (Fonts, Spacing, Alignment)")
-        self.enhance_auto_format.pack(anchor="w", padx=20, pady=3)
-        
-        self.enhance_add_summaries = ctk.CTkCheckBox(options_frame, text="Add Summaries")
-        self.enhance_add_summaries.pack(anchor="w", padx=20, pady=3)
-        
-        self.enhance_fix_consistency = ctk.CTkCheckBox(options_frame, text="Fix Style Consistency")
-        self.enhance_fix_consistency.pack(anchor="w", padx=20, pady=3)
-        
-        # Style Settings
-        style_frame = ctk.CTkFrame(frame)
-        style_frame.pack(fill="x", padx=20, pady=10)
-        
-        ctk.CTkLabel(style_frame, text="Style:", font=("Arial", 12)).pack(side="left", padx=10)
-        self.enhance_style = ctk.CTkComboBox(style_frame, values=["Professional", "Casual", "Academic", "Technical"])
-        self.enhance_style.set("Professional")
-        self.enhance_style.pack(side="left", padx=10)
-        
-        # Action Buttons
-        btn_frame = ctk.CTkFrame(frame)
-        btn_frame.pack(fill="x", padx=20, pady=10)
-        
-        self.enhance_btn_preview = ctk.CTkButton(btn_frame, text="Get Suggestions", command=self.preview_enhancements, fg_color="#5B9BD5")
-        self.enhance_btn_preview.pack(side="left", padx=5, expand=True, fill="x")
-        
-        self.enhance_btn_apply = ctk.CTkButton(btn_frame, text="Apply Enhancements", command=self.apply_enhancements, fg_color="#70AD47", height=40)
-        self.enhance_btn_apply.pack(side="left", padx=5, expand=True, fill="x")
-        
-        # Progress Section
-        progress_frame = ctk.CTkFrame(frame)
-        progress_frame.pack(fill="x", padx=20, pady=10)
-        
-        self.enhance_progress = ctk.CTkProgressBar(progress_frame)
-        self.enhance_progress.set(0)
-        self.enhance_progress.pack(fill="x", pady=5)
-        
-        self.enhance_status = ctk.CTkLabel(progress_frame, text="Ready", text_color="gray")
-        self.enhance_status.pack(pady=5)
-        
-        # Results Log
-        ctk.CTkLabel(frame, text="Results:", font=("Arial", 12, "bold")).pack(anchor="w", padx=20)
-        self.enhance_log = ctk.CTkTextbox(frame, height=150)
-        self.enhance_log.pack(fill="both", expand=True, padx=20, pady=10)
-        self.enhance_log.insert("0.0", "Select a file and choose enhancement options to begin...\n")
+                step.set_state("complete")
     
+    # Enhance Logic
     def select_enhance_file(self):
-        file_types = [
-            ("Supported Files", "*.docx;*.xlsx;*.pptx"),
-            ("Word", "*.docx"),
-            ("Excel", "*.xlsx"),
-            ("PowerPoint", "*.pptx")
-        ]
+        file_types = [("Supported", "*.docx;*.xlsx;*.pptx")]
         path = filedialog.askopenfilename(filetypes=file_types)
         if path:
             self.enhance_selected_file = path
-            self.enhance_lbl_file.configure(text=f"Selected: {os.path.basename(path)}")
-            self.enhance_log.insert(END, f"\n📁 Selected: {path}\n")
-            self.enhance_log.see(END)
+            filename = os.path.basename(path)
+            self.enhance_lbl_file.configure(text=filename, text_color=DESIGN["text_primary"])
+            self.enhance_log.insert(END, f"✓ Selected: {filename}\n")
     
     def preview_enhancements(self):
         if not hasattr(self, 'enhance_selected_file'):
-            self.enhance_log.insert(END, "❌ Please select a file first.\n")
-            self.enhance_log.see(END)
             return
-        
-        self.enhance_log.insert(END, "\n🔍 Analyzing file...\n")
-        self.enhance_log.see(END)
-        self.enhance_btn_preview.configure(state="disabled")
-        
+        self.enhance_log.insert(END, "\n🔍 Analyzing document...\n")
         threading.Thread(target=self.thread_preview_enhancements, daemon=True).start()
     
     def thread_preview_enhancements(self):
         path = self.enhance_selected_file
-        suggestions = []
-        
         try:
             if path.endswith(".docx"):
                 suggestions = suggest_word_improvements(path)
@@ -436,64 +1387,44 @@ class AppWindow(ctk.CTk):
             else:
                 suggestions = ["Unsupported file type"]
         except Exception as e:
-            suggestions = [f"Error: {e}"]
-        
+            suggestions = [f"Error: {str(e)}"]
         self.after(0, lambda: self.display_suggestions(suggestions))
     
     def display_suggestions(self, suggestions):
-        self.enhance_log.insert(END, "\n" + "="*50 + "\n")
-        for suggestion in suggestions:
-            self.enhance_log.insert(END, f"{suggestion}\n")
-        self.enhance_log.insert(END, "="*50 + "\n")
-        self.enhance_log.see(END)
-        self.enhance_btn_preview.configure(state="normal")
+        self.enhance_log.insert(END, "\n" + "─" * 40 + "\n")
+        for s in suggestions:
+            self.enhance_log.insert(END, f"  • {s}\n")
+        self.enhance_log.insert(END, "─" * 40 + "\n")
     
     def apply_enhancements(self):
         if not hasattr(self, 'enhance_selected_file'):
-            self.enhance_log.insert(END, "❌ Please select a file first.\n")
-            self.enhance_log.see(END)
             return
-        
-        # Gather options
         options = {
             'improve_text': self.enhance_improve_text.get() == 1,
             'auto_format': self.enhance_auto_format.get() == 1,
             'add_summaries': self.enhance_add_summaries.get() == 1,
             'fix_consistency': self.enhance_fix_consistency.get() == 1,
-            'improve_content': self.enhance_improve_text.get() == 1,  # For Excel
-            'improve_paragraphs': self.enhance_improve_text.get() == 1  # For Word
+            'improve_content': True,
+            'improve_paragraphs': True
         }
-        
         style = self.enhance_style.get().lower()
-        
-        self.enhance_log.insert(END, "\n🚀 Starting enhancement process...\n")
-        self.enhance_log.see(END)
-        self.enhance_btn_apply.configure(state="disabled")
+        self.enhance_btn_apply.configure(state="disabled", text="Enhancing...")
         self.enhance_progress.start()
-        
         threading.Thread(target=self.thread_apply_enhancements, args=(options, style), daemon=True).start()
     
     def thread_apply_enhancements(self, options, style):
         path = self.enhance_selected_file
         result = None
-        
         try:
             if path.endswith(".docx"):
-                self.after(0, lambda: self.enhance_status.configure(text="Enhancing Word document..."))
                 result = enrich_word_document(path, options, style)
             elif path.endswith(".xlsx"):
-                self.after(0, lambda: self.enhance_status.configure(text="Enhancing Excel file..."))
                 result = enrich_excel_file(path, options, style)
             elif path.endswith(".pptx"):
-                self.after(0, lambda: self.enhance_status.configure(text="Enhancing PowerPoint..."))
-                # For PPT, we need to use callback
                 self.ppt_enricher.enhance_presentation(path, options, style, self.handle_ppt_enhance_progress)
-                return  # Exit early, callback will handle completion
-            else:
-                result = "Error: Unsupported file type"
+                return
         except Exception as e:
-            result = f"Error: {e}"
-        
+            result = f"Error: {str(e)}"
         self.after(0, lambda: self.finish_enhancement(result))
     
     def handle_ppt_enhance_progress(self, step_key, status):
@@ -501,63 +1432,29 @@ class AppWindow(ctk.CTk):
     
     def _update_ppt_enhance_gui(self, step_key, status):
         if step_key == "final":
-            self.finish_enhancement(f"Success! {status}")
+            self.finish_enhancement(f"✅ {status}")
         elif step_key == "error":
-            self.finish_enhancement(f"Error: {status}")
+            self.finish_enhancement(f"❌ {status}")
         elif step_key == "progress":
             self.enhance_status.configure(text=status)
     
     def finish_enhancement(self, result):
         self.enhance_progress.stop()
         self.enhance_progress.set(1)
-        self.enhance_btn_apply.configure(state="normal")
-        
-        if result and "Error" not in result:
-            self.enhance_log.insert(END, f"\n✅ {result}\n")
-            self.enhance_status.configure(text="Enhancement complete!", text_color="green")
-        else:
-            self.enhance_log.insert(END, f"\n❌ {result}\n")
-            self.enhance_status.configure(text="Enhancement failed", text_color="red")
-        
-        self.enhance_log.see(END)
-
-    # ========================================================
-    # TAB 5: SMART FILL (Data + Template -> PDF)
-    # ========================================================
-    def setup_fill_tab(self):
-        frame = self.tab_fill
-        
-        ctk.CTkLabel(frame, text="1. Paste Data (JSON, CSV, or messy notes):").pack(anchor="w", padx=10)
-        self.txt_data = ctk.CTkTextbox(frame, height=100)
-        self.txt_data.pack(fill="x", padx=10, pady=5)
-        
-        ctk.CTkLabel(frame, text="2. Paste Template (with placeholders like [NAME]):").pack(anchor="w", padx=10)
-        self.txt_template = ctk.CTkTextbox(frame, height=100)
-        self.txt_template.pack(fill="x", padx=10, pady=5)
-        
-        ctk.CTkLabel(frame, text="3. Reference Style (Optional):").pack(anchor="w", padx=10)
-        self.txt_ref = ctk.CTkEntry(frame, placeholder_text="E.g., generic professional tone")
-        self.txt_ref.pack(fill="x", padx=10, pady=5)
-        
-        self.btn_fill = ctk.CTkButton(frame, text="Generate Filled Document", fg_color="purple", command=self.run_smart_fill)
-        self.btn_fill.pack(pady=15)
-        
-        ctk.CTkLabel(frame, text="Result:").pack(anchor="w", padx=10)
-        self.txt_fill_result = ctk.CTkTextbox(frame, height=150)
-        self.txt_fill_result.pack(fill="both", expand=True, padx=10, pady=10)
-
+        self.enhance_btn_apply.configure(state="normal", text="✨  Apply Enhancements")
+        self.enhance_log.insert(END, f"\n{result}\n")
+        self.enhance_status.configure(text="Complete")
+    
+    # Fill Logic
     def run_smart_fill(self):
         data = self.txt_data.get("0.0", END).strip()
         template = self.txt_template.get("0.0", END).strip()
         ref = self.txt_ref.get().strip()
-        
         if not data or not template:
-            self.txt_fill_result.insert(END, "❌ Error: Please provide Data and Template.\n")
             return
-
         self.btn_fill.configure(state="disabled", text="Generating...")
-        threading.Thread(target=self.thread_smart_fill, args=(data, template, ref)).start()
-
+        threading.Thread(target=self.thread_smart_fill, args=(data, template, ref), daemon=True).start()
+    
     def thread_smart_fill(self, data, template, ref):
         ai_text = smart_fill_content(data, template, ref)
         filename = f"Generated_Doc_{int(time.time())}.pdf"
@@ -565,81 +1462,70 @@ class AppWindow(ctk.CTk):
         os.makedirs("user_data", exist_ok=True)
         final_path = create_filled_pdf(ai_text, output_path)
         self.after(0, lambda: self.finish_smart_fill(ai_text, final_path))
-
+    
     def finish_smart_fill(self, text_result, pdf_path):
         self.txt_fill_result.delete("0.0", END)
         self.txt_fill_result.insert("0.0", text_result)
-        self.btn_fill.configure(state="normal", text="Generate Filled Document")
-        if "Error" not in pdf_path:
-            ctk.CTkLabel(self.tab_fill, text=f"✅ PDF Saved: {pdf_path}", text_color="green").pack()
-
-    # ========================================================
-    # TAB 6: ACTION RECORDER
-    # ========================================================
-    def setup_recorder_tab(self):
-        self.recorder_ui = RecorderTab(self.tab_recorder)
-        self.recorder_ui.pack(fill="both", expand=True)
-
-    # ========================================================
-    # TAB 7: DIRECTORY MAKER
-    # ========================================================
-    def setup_dir_tab(self):
-        frame = self.tab_dir
-        
-        ctk.CTkLabel(frame, text="Paste Directory Tree Structure:", font=("Arial", 14, "bold")).pack(pady=5)
-        self.txt_tree = ctk.CTkTextbox(frame, height=300, font=("Courier", 12))
-        self.txt_tree.pack(fill="x", pady=10)
-        
-        self.btn_select_dir = ctk.CTkButton(frame, text="Select Target Folder", command=self.select_target_dir)
-        self.btn_select_dir.pack(pady=5)
-        
-        self.lbl_target = ctk.CTkLabel(frame, text="Target: Current Folder")
-        self.lbl_target.pack()
-        
-        self.btn_create_tree = ctk.CTkButton(frame, text="Generate Directory Structure", fg_color="orange", command=self.generate_tree)
-        self.btn_create_tree.pack(pady=20)
-
+        self.btn_fill.configure(state="normal", text="✨  Generate Document")
+    
+    # Directory Logic
     def select_target_dir(self):
         path = filedialog.askdirectory()
         if path:
             self.target_dir = path
-            self.lbl_target.configure(text=f"Target: {path}")
-
+            self.lbl_target.configure(
+                text=f".../{os.path.basename(path)}",
+                text_color=DESIGN["text_primary"]
+            )
+    
     def generate_tree(self):
         text = self.txt_tree.get("0.0", END)
         target = getattr(self, 'target_dir', os.getcwd())
         msg = create_directory_from_text(target, text)
         
         popup = ctk.CTkToplevel(self)
-        popup.geometry("400x150")
-        popup.title("Result")
-        ctk.CTkLabel(popup, text=msg, wraplength=380).pack(pady=20)
-        ctk.CTkButton(popup, text="OK", command=popup.destroy).pack()
+        popup.title("Success")
+        popup.geometry("400x200")
+        popup.configure(fg_color=DESIGN["bg_secondary"])
+        
+        ctk.CTkLabel(
+            popup,
+            text="✅",
+            font=("Arial", 40)
+        ).pack(pady=(30, 10))
+        
+        ctk.CTkLabel(
+            popup,
+            text=msg,
+            font=(DESIGN["font_body"][0], 13),
+            wraplength=350
+        ).pack(pady=20)
+        
+        ModernButton(
+            popup,
+            text="Close",
+            command=popup.destroy,
+            width=120
+        ).pack(pady=(0, 20))
     
-    # ========================================================
-    # OLLAMA STATUS MANAGEMENT
-    # ========================================================
+    # Ollama Status
     def check_ollama_status(self):
-        """Check if Ollama is running and update status indicator"""
         def check():
             manager = get_ollama_manager()
             is_running = manager.check_ollama_running()
-            
-            # Update UI on main thread
             self.after(0, lambda: self.update_ollama_status(is_running))
-        
-        # Run check in background thread
         threading.Thread(target=check, daemon=True).start()
     
     def update_ollama_status(self, is_running):
-        """Update the Ollama status indicator"""
         if is_running:
-            self.ollama_status_label.configure(
-                text="● Running", 
-                text_color="green"
-            )
+            self.status_badge.set_status("success", "Ollama Active")
         else:
-            self.ollama_status_label.configure(
-                text="● Not Running", 
-                text_color="red"
-            )
+            self.status_badge.set_status("error", "Ollama Offline")
+
+
+# =====================================================
+# APPLICATION ENTRY POINT
+# =====================================================
+if __name__ == "__main__":
+    app = AppWindow()
+    app.mainloop()
