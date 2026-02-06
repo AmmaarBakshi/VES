@@ -17,6 +17,7 @@ from app.engine.pdf_agent import PDFAgent
 from app.engine.excel_agent import enrich_excel_file, suggest_excel_improvements
 from app.engine.word_agent import enrich_word_document, suggest_word_improvements
 from app.gui.recorder_tab import RecorderTab
+from app.gui.web_scraper_tab import WebScraperTab
 
 # --- PREMIUM DESIGN SYSTEM ---
 DESIGN = {
@@ -277,7 +278,7 @@ class AppWindow(ctk.CTk):
         self.content_area.grid_rowconfigure(0, weight=1)
     
     def init_all_views(self):
-        views = [("Smart Process", "⚙️", self.setup_process_view), ("PPT Maker", "📊", self.setup_ppt_view), ("Smart PDF", "📄", self.setup_pdf_view), ("AI Enhance", "✨", self.setup_enhance_view), ("Smart Fill", "📝", self.setup_fill_view), ("Recorder", "🎙️", self.setup_recorder_view), ("Directory", "📁", self.setup_dir_view)]
+        views = [("Smart Process", "⚙️", self.setup_process_view), ("PPT Maker", "📊", self.setup_ppt_view), ("Smart PDF", "📄", self.setup_pdf_view), ("AI Enhance", "✨", self.setup_enhance_view), ("Smart Fill", "📝", self.setup_fill_view), ("Recorder", "🎙️", self.setup_recorder_view), ("Web Scraper", "🌐", self.setup_web_scraper_view), ("Directory", "📁", self.setup_dir_view)]
         for name, icon, setup_func in views:
             self.create_nav_button(name, icon)
             frame = ctk.CTkFrame(self.content_area, fg_color="transparent")
@@ -506,12 +507,21 @@ class AppWindow(ctk.CTk):
     def setup_recorder_view(self, frame):
         container = ctk.CTkFrame(frame, fg_color="transparent")
         container.pack(fill="both", expand=True, padx=40, pady=40)
-        card = ModernCard(container, title="Voice Recorder")
+        card = ModernCard(container, title="Action Replay")
         card.pack(fill="both", expand=True)
         self.recorder_ui = RecorderTab(card)
         self.recorder_ui.pack(fill="both", expand=True, padx=24, pady=20)
 
-    # === VIEW 7: DIRECTORY (MODIFIED FOR OMG FEATURES) ===
+    # === VIEW 7: WEB SCRAPER ===
+    def setup_web_scraper_view(self, frame):
+        container = ctk.CTkFrame(frame, fg_color="transparent")
+        container.pack(fill="both", expand=True, padx=40, pady=40)
+        card = ModernCard(container, title="Web Scraper Recorder")
+        card.pack(fill="both", expand=True)
+        self.web_scraper_ui = WebScraperTab(card)
+        self.web_scraper_ui.pack(fill="both", expand=True, padx=24, pady=20)
+
+    # === VIEW 8: DIRECTORY (MODIFIED FOR OMG FEATURES) ===
     def setup_dir_view(self, frame):
         container = ctk.CTkFrame(frame, fg_color="transparent")
         container.pack(fill="both", expand=True, padx=40, pady=40)

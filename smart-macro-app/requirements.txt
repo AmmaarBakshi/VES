@@ -6,9 +6,11 @@ python-docx
 python-pptx
 pypdf
 packaging
-pygetwindow
-pywin32
 opencv-python
 requests
+psutil
+pygetwindow
+pywin32
 pynput
 pyautogui
+playwright

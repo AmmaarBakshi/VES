@@ -7,20 +7,18 @@ import json
 import math
 import os
 import uuid
-#changes
 import ctypes
+import win32gui
+import win32process
+import psutil
 
-# FORCE high-DPI awareness on Windows to prevent coordinate shifting
+# FORCE HIGH-DPI AWARENESS (Fixes coordinate drift on modern screens)
 try:
     ctypes.windll.shcore.SetProcessDpiAwareness(1)
 except Exception:
-    try:
-        ctypes.windll.user32.SetProcessDPIAware()
-    except Exception:
-        pass
-#changes
+    try: ctypes.windll.user32.SetProcessDPIAware()
+    except: pass
 
-# FAILSAFE: Drag mouse to top-left corner to kill the script instantly
 pyautogui.FAILSAFE = True 
 
 class ActionRepeater:
@@ -31,53 +29,70 @@ class ActionRepeater:
         self.mouse_listener = None
         self.key_listener = None
         
-        # PERSISTENCE
+        # SETTINGS
         self.base_folder = "user_data/macros"
-        self.current_session_id = None
-        self.current_image_folder = None
-        
-        # OPTIMIZATION SETTINGS
-        self.move_duration = 0.2  # Seconds to glide mouse (0 = instant)
-        self.max_delay = 1.0      # Max wait time between actions (removes long pauses)
-        self.speed_multiplier = 1.0 # 1.0 = normal, 2.0 = double speed
+        self.move_duration = 0.2
+        self.speed_multiplier = 1.0
+
+    def get_window_info_under_mouse(self, x, y):
+        """
+        NUCLEAR OPTION: Uses low-level Windows API to find exactly which 
+        process and window is under the mouse cursor.
+        """
+        try:
+            # 1. Get HWND (Window Handle) at coordinates
+            hwnd = win32gui.WindowFromPoint((x, y))
+            
+            # 2. Walk up to the root window (in case we clicked a button inside)
+            while win32gui.GetParent(hwnd):
+                hwnd = win32gui.GetParent(hwnd)
+            
+            # 3. Get Process Name (e.g., 'notepad.exe')
+            _, pid = win32process.GetWindowThreadProcessId(hwnd)
+            try:
+                process = psutil.Process(pid)
+                process_name = process.name()
+            except:
+                process_name = "Unknown"
+
+            # 4. Get Window Rect & Title
+            rect = win32gui.GetWindowRect(hwnd)
+            win_x, win_y = rect[0], rect[1]
+            title = win32gui.GetWindowText(hwnd)
+            
+            return {
+                "title": title,
+                "process": process_name,
+                "x": win_x,
+                "y": win_y,
+                "hwnd": hwnd # Only for recording, invalid on restart
+            }
+        except Exception as e:
+            print(f"Debug Info Error: {e}")
+            return None
 
     def start_recording(self):
         self.actions = []
         self.recording = True
         self.start_time = time.time()
         
-        # Create session folder for images
-        self.current_session_id = str(uuid.uuid4())[:8]
-        self.current_image_folder = os.path.join(self.base_folder, self.current_session_id)
-        if not os.path.exists(self.current_image_folder):
-            os.makedirs(self.current_image_folder)
-        
-        # We record CLICKS and KEYS. 
-        # We generally DO NOT record mouse movement paths because it creates huge laggy files.
         self.mouse_listener = mouse.Listener(on_click=self.on_click)
         self.key_listener = keyboard.Listener(on_press=self.on_press)
-        
         self.mouse_listener.start()
         self.key_listener.start()
-        print(f"🔴 Recording started in session {self.current_session_id}...")
+        print("🔴 Recording... (Tracking Process Names)")
 
     def stop_recording(self):
         self.recording = False
         if self.mouse_listener: self.mouse_listener.stop()
         if self.key_listener: self.key_listener.stop()
-        print(f"⏹ Recording stopped. Captured {len(self.actions)} actions.")
+        print(f"⏹ Stopped. Captured {len(self.actions)} actions.")
         return self.actions
 
     def save_macro(self, filepath):
-        # Ensure the directory for the macro file exists
-        macro_dir = os.path.dirname(filepath)
-        if macro_dir and not os.path.exists(macro_dir):
-            os.makedirs(macro_dir)
-            
-        data = {
-            "session_id": self.current_session_id,
-            "actions": self.actions
-        }
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        # Generate ID if saving new
+        data = {"actions": self.actions}
         with open(filepath, 'w') as f:
             json.dump(data, f, indent=2)
 
@@ -87,223 +102,143 @@ class ActionRepeater:
             with open(filepath, 'r') as f:
                 data = json.load(f)
             
-            # Handle both old format (list) and new format (dict)
-            if isinstance(data, list):
-                actions = data
-                # No session ID, likely old macro
-            else:
-                actions = data.get("actions", [])
-                # We might need session_id if we have relative paths, but we stored absolute or handle retrieval
+            if isinstance(data, list): actions = data
+            else: actions = data.get("actions", [])
             
             self.play_actions(actions)
-            return "Macro finished successfully."
+            return "✅ Macro Finished"
         except pyautogui.FailSafeException:
-            return "Stopped by User (Failsafe triggered)."
+            return "🛑 Stopped by User"
         except Exception as e:
-            return f"Error playing macro: {e}"
+            return f"❌ Error: {e}"
 
     def on_click(self, x, y, button, pressed):
         if pressed and self.recording:
             dt = time.time() - self.start_time
             
-            # IMAGE ANCHORING: Capture distinct feature around the click
-            # We capture a 60x60 square around existing click
-            img_filename = f"click_{int(dt*1000)}.png"
-            img_path = os.path.join(self.current_image_folder, img_filename)
+            # INTELLIGENT CAPTURE
+            win_info = self.get_window_info_under_mouse(x, y)
             
-            # WINDOW CAPTURE
-            window_title = None
-            relative_x = x
-            relative_y = y
-            
-            try:
-                # STRATEGY 1: Check what window is currently active (Reliable for clicks)
-                target_window = None
-                active_window = gw.getActiveWindow()
-                
-                # Verify the click is actually INSIDE the active window
-                if active_window:
-                     # Check bounds: left <= x <= right AND top <= y <= bottom
-                    if (active_window.left <= x <= active_window.right and 
-                        active_window.top <= y <= active_window.bottom):
-                        target_window = active_window
-                
-                # STRATEGY 2: If active window doesn't match, query windows at location
-                if not target_window:
-                    windows = gw.getWindowsAt(x, y)
-                    if windows:
-                        target_window = windows[0]
-
-                if target_window:
-                    window_title = target_window.title
-                    # Handle minimized/maximized offsets if necessary, 
-                    # but usually left/top is enough context
-                    relative_x = x - target_window.left
-                    relative_y = y - target_window.top
-                    print(f"Captured Window: '{window_title}' at ({target_window.left}, {target_window.top}) | Click: ({x}, {y}) | Rel: ({relative_x}, {relative_y})")
-            except Exception as e:
-                print(f"Warning: Window capture failed: {e}")
-            
-            try:
-                # Region: (left, top, width, height)
-                capture_region = (x - 30, y - 30, 60, 60)
-                screenshot = pyautogui.screenshot(region=capture_region)
-                screenshot.save(img_path)
-                has_image = True
-            except Exception as e:
-                print(f"Warning: Failed to capture screenshot anchor: {e}")
-                has_image = False
-                img_path = None
-
-            # Record action
-            self.actions.append({
+            action = {
                 'type': 'click', 
                 'x': x, 
                 'y': y, 
-                'relative_x': relative_x,
-                'relative_y': relative_y,
-                'window_title': window_title,
                 'button': str(button), 
                 'time': dt,
-                'image_anchor': img_path if has_image else None
-            })
+                # Store Process info for robust replay
+                'process_name': win_info['process'] if win_info else None,
+                'window_title': win_info['title'] if win_info else None,
+                'relative_x': (x - win_info['x']) if win_info else 0,
+                'relative_y': (y - win_info['y']) if win_info else 0
+            }
+            self.actions.append(action)
+            
+            if win_info:
+                print(f"🖱️ Clicked [{win_info['process']}] at ({action['relative_x']}, {action['relative_y']})")
 
     def on_press(self, key):
         if self.recording:
-            dt = time.time() - self.start_time
-            try:
-                k = key.char
-            except AttributeError:
-                k = str(key) # Special keys
-            
-            # Stop key (F9) shouldn't be recorded
-            if k == 'Key.f9': 
-                return
+            try: k = key.char
+            except: k = str(key)
+            if k == 'Key.f9': return 
+            self.actions.append({'type': 'press', 'key': k, 'time': time.time() - self.start_time})
 
-            self.actions.append({'type': 'press', 'key': k, 'time': dt})
+    def find_target_window(self, process_name, window_title):
+        """
+        Robust Window Finder:
+        1. Checks Exact Title
+        2. Checks Process Name (The most robust way)
+        """
+        # Strategy 1: Find by exact title (fastest)
+        if window_title:
+            try:
+                wins = gw.getWindowsWithTitle(window_title)
+                if wins: return wins[0]
+            except: pass
+
+        # Strategy 2: Find by Process Name (iterate all windows)
+        # This fixes "Untitled - Notepad" changing to "Notes - Notepad"
+        if process_name:
+            def callback(hwnd, result_list):
+                try:
+                    _, pid = win32process.GetWindowThreadProcessId(hwnd)
+                    proc = psutil.Process(pid)
+                    if proc.name().lower() == process_name.lower():
+                        if win32gui.IsWindowVisible(hwnd):
+                            result_list.append(hwnd)
+                except: pass
+            
+            hwnds = []
+            win32gui.EnumWindows(callback, hwnds)
+            
+            if hwnds:
+                # If multiple windows (e.g. 2 Chrome tabs), try to match title fuzzy
+                best_hwnd = hwnds[0]
+                if window_title:
+                    for h in hwnds:
+                        t = win32gui.GetWindowText(h)
+                        if t in window_title or window_title in t:
+                            best_hwnd = h
+                            break
+                
+                # Convert HWND to pygetwindow object for easy manipulation
+                # or just use win32gui to get rect
+                rect = win32gui.GetWindowRect(best_hwnd)
+                return {
+                    'left': rect[0], 'top': rect[1], 
+                    'hwnd': best_hwnd, 'obj': None # Using raw rect logic
+                }
+        return None
 
     def play_actions(self, actions):
         if not actions: return
-        
-        # We track 'virtual time' to allow speed adjustments
-        virtual_start_time = actions[0]['time'] 
-        last_action_time = virtual_start_time
+        last_action_time = actions[0]['time']
 
-        for i, action in enumerate(actions):
-            # 1. Calculate how long to wait
-            original_delay = action['time'] - last_action_time
-            
-            # OPTIMIZATION: Cap the delay to catch up if user recorded long pauses
-            if original_delay > self.max_delay:
-                original_delay = self.max_delay
-            
-            # OPTIMIZATION: Apply Speed Multiplier
-            adjusted_delay = original_delay / self.speed_multiplier
-            
-            if adjusted_delay > 0:
-                time.sleep(adjusted_delay)
+        print("\n▶️ PLAYBACK STARTED")
 
-            # 2. Execute Action
+        for action in actions:
+            # Timing
+            delay = action['time'] - last_action_time
+            if delay > 0.5: delay = 0.5 # Smart speedup
+            if delay > 0: time.sleep(delay / self.speed_multiplier)
+            last_action_time = action['time']
+
             if action['type'] == 'click':
-                target_x, target_y = action['x'], action['y']
-
-                # ROBUST WINDOW HANDLING: Find Window & Apply Relative Coords
-                win_title = action.get('window_title')
-                if win_title:
-                    try:
-                        # 1. Find Candidates
-                        candidates = gw.getWindowsWithTitle(win_title)
-                       
-                        # 2. Filter Candidates (Must be visible, non-empty)
-                        valid_candidates = [w for w in candidates if w.title and (w.width > 0 and w.height > 0)]
-                        
-                        target_win = None
-                        
-                        # 3. Selection Strategy
-                        # A. Exact Match
-                        for w in valid_candidates:
-                            if w.title == win_title:
-                                target_win = w
-                                break
-                        
-                        # B. Fuzzy Match (if no exact match)
-                        if not target_win:
-                             # Try partial matches (case insensitive)
-                             clean_target = win_title.lower().strip()
-                             for w in gw.getAllWindows():
-                                 if not w.title: continue
-                                 curr_title = w.title.lower().strip()
-                                 if clean_target in curr_title or curr_title in clean_target:
-                                     target_win = w
-                                     print(f"Fuzzy match: '{win_title}' -> '{w.title}'")
-                                     break
-
-                        # 4. Activate & Calculate
-                        if target_win:
-                            if target_win.isMinimized:
-                                target_win.restore()
-                                time.sleep(0.2)
-                            
-                            try:
-                                target_win.activate()
-                                time.sleep(0.2)
-                            except Exception:
-                                pass # Focus might fail if user is holding mouse, but we proceed
-                            
-                            if 'relative_x' in action and 'relative_y' in action:
-                                target_x = target_win.left + action['relative_x']
-                                target_y = target_win.top + action['relative_y']
-                                print(f"Targeting '{target_win.title}' New Pos: ({target_win.left}, {target_win.top}) | Target: ({target_x}, {target_y})")
-                        else:
-                            print(f"⚠️ Could not find window: '{win_title}'. Using original coordinates.")
-
-                    except Exception as e:
-                        print(f"Window logic error: {e}")
+                target_x, target_y = action['x'], action['y'] # Default to absolute
                 
-                # RECOVERY & PRIMARY STRATEGY: Image Search
-                # We prioritize image match if available because it guarantees hitting the button 
-                # even if window logic was slightly off or UI shifted.
-                img_found = False
-                if action.get('image_anchor') and os.path.exists(action['image_anchor']):
-                    try:
-                        # Search for the image on screen
-                        # confidence=0.8 allows for slight rendering differences (antialiasing, etc)
+                # PROCESS LOCK REPLAY
+                if action.get('process_name'):
+                    target_win = self.find_target_window(action['process_name'], action.get('window_title'))
+                    
+                    if target_win:
+                        # Found the window! Calculate new coordinates
+                        # Handle struct diff between pygetwindow obj and dict
+                        if isinstance(target_win, dict):
+                            win_x, win_y = target_win['left'], target_win['top']
+                            hwnd = target_win['hwnd']
+                        else:
+                            win_x, win_y = target_win.left, target_win.top
+                            hwnd = target_win._hWnd
+
+                        # Bring to front (Crucial)
                         try:
-                            found_pos = pyautogui.locateCenterOnScreen(action['image_anchor'], confidence=0.8)
-                        except TypeError:
-                            # Fallback if opencv not found
-                            found_pos = pyautogui.locateCenterOnScreen(action['image_anchor'])
-                            
-                        if found_pos:
-                            print(f"✅ Image confirmed at {found_pos}. Overriding coords.")
-                            target_x, target_y = found_pos
-                            img_found = True
-                        else:
-                            print(f"⚠️ Image anchor not found visually.")
-                    except Exception as e:
-                        print(f"Image search failed: {e}")
+                            if win32gui.IsIconic(hwnd): win32gui.ShowWindow(hwnd, 9) # Restore
+                            win32gui.SetForegroundWindow(hwnd)
+                        except: pass
+                        
+                        # Apply relative offset
+                        target_x = win_x + action['relative_x']
+                        target_y = win_y + action['relative_y']
+                        print(f"✅ Tracking {action['process_name']} -> Moving to ({target_x}, {target_y})")
+                    else:
+                        print(f"⚠️ App {action['process_name']} not found. Clicking absolute coords.")
 
-                # SMOOTHNESS: Glide to target
-                curr_x, curr_y = pyautogui.position()
-                dist = math.hypot(curr_x - target_x, curr_y - target_y)
-                
-                if dist > 50:
-                    pyautogui.moveTo(target_x, target_y, duration=self.move_duration / self.speed_multiplier)
-                else:
-                    pyautogui.moveTo(target_x, target_y)
-                
-                # Perform click
-                if "Button.right" in action['button']:
-                    pyautogui.click(button='right')
-                else:
-                    pyautogui.click()
+                # Move & Click
+                pyautogui.moveTo(target_x, target_y, duration=self.move_duration)
+                if "right" in action['button']: pyautogui.click(button='right')
+                else: pyautogui.click()
             
             elif action['type'] == 'press':
-                key_val = action['key']
-                if "Key." in key_val:
-                    clean_key = key_val.replace("Key.", "")
-                    pyautogui.press(clean_key)
-                else:
-                    pyautogui.write(key_val)
-
-            last_action_time = action['time']
+                key = action['key']
+                if "Key." in key: pyautogui.press(key.replace("Key.", ""))
+                else: pyautogui.write(key)
