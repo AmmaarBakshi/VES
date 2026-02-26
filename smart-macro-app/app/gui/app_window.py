@@ -8,7 +8,7 @@ import shutil
 # ---IMPORTS FROM YOUR PROJECT MODULES ---
 from app.utils.config_loader import save_macro, load_macros
 from app.utils.ollama_manager import get_ollama_manager
-from app.engine.directory_maker import create_directory_from_text
+from app.engine.directory_maker import create_directory_from_text, parse_tree_to_list
 from app.engine.word_agent import process_word_document
 from app.engine.excel_agent import process_excel_file
 from app.engine.smart_fill import smart_fill_content
@@ -698,91 +698,174 @@ class AppWindow(ctk.CTk):
         self.web_scraper_ui = WebScraperTab(card)
         self.web_scraper_ui.pack(fill="both", expand=True, padx=24, pady=20)
 
-    # === VIEW 8: DIRECTORY (MODIFIED FOR OMG FEATURES) ===
+    # === VIEW 8: DIRECTORY ===
     def setup_dir_view(self, frame):
         container = ctk.CTkFrame(frame, fg_color="transparent")
         container.pack(fill="both", expand=True, padx=40, pady=40)
-        
+
         header = ctk.CTkFrame(container, fg_color="transparent")
-        header.pack(fill="x", pady=(0, 32))
-        
-        title = ctk.CTkLabel(
+        header.pack(fill="x", pady=(0, 20))
+        ctk.CTkLabel(
             header,
             text="Directory Generator",
             font=(DESIGN["font_display"][0], 28, "bold"),
             text_color=DESIGN["text_primary"]
-        )
-        title.pack(side="left")
-        
-        # Main Card
-        card = ModernCard(container)
-        card.pack(fill="both", expand=True)
-        
-        inner = ctk.CTkFrame(card, fg_color="transparent")
-        inner.pack(fill="both", expand=True, padx=24, pady=20)
-        
-        # Instructions
-        instructions = ctk.CTkLabel(
-            inner,
+        ).pack(side="left")
+
+        # ── Two-column layout: Input left, Preview right ──
+        cols = ctk.CTkFrame(container, fg_color="transparent")
+        cols.pack(fill="both", expand=True)
+        cols.grid_columnconfigure(0, weight=3)
+        cols.grid_columnconfigure(1, weight=2)
+        cols.grid_rowconfigure(0, weight=1)
+
+        # ── LEFT: Input card ──
+        left_card = ModernCard(cols, title="Tree Structure")
+        left_card.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+        left_inner = ctk.CTkFrame(left_card, fg_color="transparent")
+        left_inner.pack(fill="both", expand=True, padx=24, pady=20)
+
+        ctk.CTkLabel(
+            left_inner,
             text="Paste your directory tree structure below:",
             font=(DESIGN["font_body"][0], 13),
             text_color=DESIGN["text_secondary"],
             anchor="w"
-        )
-        instructions.pack(fill="x", pady=(0, 12))
-        
-        # Tree input
+        ).pack(fill="x", pady=(0, 8))
+
         self.txt_tree = ctk.CTkTextbox(
-            inner,
+            left_inner,
             font=(DESIGN["font_mono"][0], 12),
             fg_color=DESIGN["bg_input"],
             border_width=1,
             border_color=DESIGN["border_subtle"],
             corner_radius=8
         )
-        self.txt_tree.pack(fill="both", expand=True, pady=(0, 12))
+        self.txt_tree.pack(fill="both", expand=True, pady=(0, 10))
 
-        # --- Reasoning Terminal ---
-        self.dir_terminal = self._make_reasoning_terminal(inner)
-        
-        # --- PROGRESS STATUS SECTION ---
-        self.dir_status_frame = ctk.CTkFrame(inner, fg_color="transparent")
-        self.dir_status_frame.pack(fill="x", pady=(4, 4))
-        
-        self.dir_progress = ctk.CTkProgressBar(self.dir_status_frame, progress_color=DESIGN["success"], fg_color=DESIGN["bg_input"], height=6)
-        self.dir_progress.set(0)
-        # We pack it but hide it initially
-        
-        self.dir_status_lbl = ctk.CTkLabel(self.dir_status_frame, text="Ready to build", text_color=DESIGN["text_tertiary"], font=(DESIGN["font_body"][0], 12), anchor="w")
-        self.dir_status_lbl.pack(fill="x")
+        # Preview + Build buttons row
+        action_row = ctk.CTkFrame(left_inner, fg_color="transparent")
+        action_row.pack(fill="x", pady=(0, 10))
 
-        # Bottom controls
-        controls = ctk.CTkFrame(inner, fg_color="transparent")
-        controls.pack(fill="x")
-        
-        self.btn_select_dir = ModernButton(
-            controls,
-            text="📁  Select Destination",
-            style="secondary",
-            command=self.select_target_dir
-        )
-        self.btn_select_dir.pack(side="left", padx=(0, 12))
-        
-        self.lbl_target = ctk.CTkLabel(
-            controls,
-            text="Current directory",
-            font=(DESIGN["font_body"][0], 13),
-            text_color=DESIGN["text_disabled"]
-        )
-        self.lbl_target.pack(side="left", fill="x", expand=True)
-        
+        ModernButton(
+            action_row,
+            text="🔍  Preview Tree",
+            style="ghost",
+            command=self.preview_dir_tree
+        ).pack(side="left", padx=(0, 8))
+
+        # Enhancement 3: Copy Tree button
+        ModernButton(
+            action_row,
+            text="📋  Copy Tree",
+            style="ghost",
+            command=self._copy_dir_preview
+        ).pack(side="left", padx=(0, 8))
+
         self.btn_create_tree = ModernButton(
-            controls,
+            action_row,
             text="🚀  Build Project",
             style="success",
             command=self.generate_tree
         )
         self.btn_create_tree.pack(side="right")
+
+        # Destination selector
+        dest_row = ctk.CTkFrame(left_inner, fg_color="transparent")
+        dest_row.pack(fill="x", pady=(0, 4))
+
+        ModernButton(
+            dest_row,
+            text="📁  Select Destination",
+            style="secondary",
+            command=self.select_target_dir
+        ).pack(side="left", padx=(0, 10))
+
+        self.lbl_target = ctk.CTkLabel(
+            dest_row,
+            text="Current directory",
+            font=(DESIGN["font_body"][0], 12),
+            text_color=DESIGN["text_disabled"]
+        )
+        self.lbl_target.pack(side="left", fill="x", expand=True)
+
+        # Progress line  (Bug 2 fix: progress bar starts hidden)
+        self.dir_status_frame = ctk.CTkFrame(left_inner, fg_color="transparent")
+        self.dir_status_frame.pack(fill="x", pady=(4, 0))
+        self.dir_progress = ctk.CTkProgressBar(
+            self.dir_status_frame,
+            progress_color=DESIGN["success"],
+            fg_color=DESIGN["bg_input"],
+            height=6
+        )
+        self.dir_progress.set(0)
+        # Do NOT pack here — it will be packed when a build starts
+        self.dir_status_lbl = ctk.CTkLabel(
+            self.dir_status_frame,
+            text="Ready to build",
+            text_color=DESIGN["text_tertiary"],
+            font=(DESIGN["font_body"][0], 12),
+            anchor="w"
+        )
+        self.dir_status_lbl.pack(fill="x")
+
+        # Reasoning terminal
+        self.dir_terminal = self._make_reasoning_terminal(left_inner)
+
+        # ── RIGHT: Preview card ──
+        right_card = ModernCard(cols, title="📋 Parsed Preview")
+        right_card.grid(row=0, column=1, sticky="nsew")
+        right_inner = ctk.CTkFrame(right_card, fg_color="transparent")
+        right_inner.pack(fill="both", expand=True, padx=16, pady=16)
+
+        # Enhancement 2: count badge row
+        preview_header_row = ctk.CTkFrame(right_inner, fg_color="transparent")
+        preview_header_row.pack(fill="x", pady=(0, 6))
+        ctk.CTkLabel(
+            preview_header_row,
+            text='Click "Preview Tree" to verify what will be created:',
+            font=(DESIGN["font_body"][0], 12),
+            text_color=DESIGN["text_tertiary"],
+            anchor="w"
+        ).pack(side="left", fill="x", expand=True)
+        self.dir_count_badge = ctk.CTkLabel(
+            preview_header_row,
+            text="",
+            font=(DESIGN["font_mono"][0], 10, "bold"),
+            text_color=DESIGN["accent_primary"],
+            anchor="e"
+        )
+        self.dir_count_badge.pack(side="right")
+
+        self.dir_preview_box = ctk.CTkTextbox(
+            right_inner,
+            font=(DESIGN["font_mono"][0], 11),
+            fg_color=DESIGN["bg_input"],
+            border_width=1,
+            border_color=DESIGN["border_subtle"],
+            corner_radius=8,
+            text_color="#00FF88",
+            state="disabled"
+        )
+        self.dir_preview_box.pack(fill="both", expand=True, pady=(0, 10))
+
+        # Open in Explorer button (hidden until build succeeds)
+        self.btn_open_explorer = ctk.CTkButton(
+            right_inner,
+            text="📂  Open in Explorer",
+            fg_color=DESIGN["bg_input"],
+            hover_color=DESIGN["bg_hover"],
+            border_width=1,
+            border_color=DESIGN["border_subtle"],
+            text_color=DESIGN["text_disabled"],
+            font=(DESIGN["font_body"][0], 12, "bold"),
+            height=40,
+            corner_radius=8,
+            state="disabled",
+            command=self._open_built_dir_in_explorer
+        )
+        self.btn_open_explorer.pack(fill="x")
+        self._built_dir_path = None
 
     # =====================================================
     # LOGIC METHODS
@@ -1051,27 +1134,95 @@ class AppWindow(ctk.CTk):
         if pdf_path and os.path.isfile(str(pdf_path)):
             self._enable_download("fill", pdf_path)
     
-    # Directory Logic (Modified for OMG Features)
+    # ── Directory Logic ──
     def select_target_dir(self):
         path = filedialog.askdirectory()
         if path:
             self.target_dir = path
-            self.lbl_target.configure(text=f".../{os.path.basename(path)}", text_color=DESIGN["text_primary"])
-    
+            self.lbl_target.configure(
+                text=f".../{os.path.basename(path)}",
+                text_color=DESIGN["text_primary"]
+            )
+
+    def preview_dir_tree(self):
+        """Parse the tree text and show a human-readable preview in the right panel."""
+        text = self.txt_tree.get("0.0", END).strip()
+        if not text:
+            return
+
+        entries = parse_tree_to_list(text)
+        if not entries:
+            preview = "⚠️  Nothing parsed — check the tree format."
+            # Enhancement 2: clear badge
+            self.dir_count_badge.configure(text="")
+        else:
+            lines = []
+            for e in entries:
+                indent = "  " * (e['depth'] // 2)
+                icon = "📄" if e['type'] == 'file' else "📁"
+                lines.append(f"{indent}{icon} {e['name']}")
+            total_files = sum(1 for e in entries if e['type'] == 'file')
+            total_folders = sum(1 for e in entries if e['type'] == 'folder')
+            summary = f"\n── {total_folders} folder(s), {total_files} file(s) ──"
+            preview = "\n".join(lines) + summary
+            # Enhancement 2: update count badge
+            self.dir_count_badge.configure(
+                text=f"{total_folders} 📁  {total_files} 📄"
+            )
+
+        self.dir_preview_box.configure(state="normal")
+        self.dir_preview_box.delete("0.0", END)
+        self.dir_preview_box.insert("0.0", preview)
+        self.dir_preview_box.configure(state="disabled")
+
+    def _copy_dir_preview(self):
+        """Enhancement 3: Copy the parsed preview text to the clipboard."""
+        self.dir_preview_box.configure(state="normal")
+        content = self.dir_preview_box.get("0.0", END).strip()
+        self.dir_preview_box.configure(state="disabled")
+        if content:
+            self.clipboard_clear()
+            self.clipboard_append(content)
+
     def generate_tree(self):
         text = self.txt_tree.get("0.0", END).strip()
-        if not text: return
+        if not text:
+            return
+
+        # Enhancement 1: validate the tree produces at least one parseable entry
+        entries = parse_tree_to_list(text)
+        if not entries:
+            self.dir_status_lbl.configure(
+                text="⚠️ Nothing to build — paste a valid directory tree first.",
+                text_color=DESIGN["warning"]
+            )
+            return
+
         target = getattr(self, 'target_dir', os.getcwd())
 
         self.btn_create_tree.configure(state="disabled", text="Asking AI...")
+        # Hide explorer button while rebuilding
+        self.btn_open_explorer.configure(
+            state="disabled",
+            fg_color=DESIGN["bg_input"],
+            text_color=DESIGN["text_disabled"],
+            text="📂  Open in Explorer"
+        )
         self._clear_terminal(self.dir_terminal)
 
         def on_answer(user_context):
+            # ── Instant feedback so the terminal is never blank ──
+            self.after(0, lambda: self._stream_thought(
+                self.dir_terminal,
+                f"◆ Build started — target: {target}\n"
+                f"◆ Detecting project stack...\n\n"
+            ))
+            # Show and start the progress bar only now (Bug 2 fix)
             self.after(0, lambda: self.dir_progress.pack(fill="x", pady=(0, 5)))
             self.after(0, self.dir_progress.start)
 
             def on_progress(status, msg):
-                self.after(0, lambda: self._update_dir_ui(status, msg))
+                self.after(0, lambda s=status, m=msg: self._update_dir_ui(s, m, target))
 
             def on_thought(token):
                 self._stream_thought(self.dir_terminal, token)
@@ -1081,22 +1232,83 @@ class AppWindow(ctk.CTk):
             )
             create_directory_from_text(target, enriched_tree, on_progress, thought_callback=on_thought)
 
-        self._run_clarification_phase("directory", "Directory Maker", on_answer)
 
-    def _update_dir_ui(self, status, msg):
+        def on_cancel():
+            # Re-enable button if the dialog is dismissed without answering
+            self.after(0, lambda: self.btn_create_tree.configure(
+                state="normal", text="🚀  Build Project"
+            ))
+
+        # Wrap _run_clarification_phase to catch cancellation
+        self._run_clarification_phase_with_cancel("directory", "Directory Maker", on_answer, on_cancel)
+
+    def _run_clarification_phase_with_cancel(self, task_type, task_label, on_proceed, on_cancel=None):
+        """
+        Like _run_clarification_phase but calls on_cancel() if the dialog is
+        closed without the user submitting an answer.
+        """
+        from app.gui.clarify_dialog import ClarifyDialog
+        from app.engine.cot_engine import stream_clarifications
+
+        if not hasattr(self, '_clarify_llm'):
+            self._clarify_llm = OllamaLLM(model="llama3", temperature=0.4)
+
+        def _wrapped_proceed(answer):
+            on_proceed(answer)
+
+        def _wrapped_cancel():
+            if on_cancel:
+                on_cancel()
+
+        dlg = ClarifyDialog(
+            self,
+            task_label=task_label,
+            on_proceed=_wrapped_proceed,
+            on_cancel=_wrapped_cancel
+        )
+
+        def _ask():
+            self.after(0, dlg.start_ai_message)
+            def token_cb(tok):
+                self.after(0, lambda t=tok: dlg.append_ai_token(t))
+            stream_clarifications(self._clarify_llm, task_type, token_cb)
+            self.after(0, dlg.end_ai_message)
+
+        threading.Thread(target=_ask, daemon=True).start()
+
+    def _open_built_dir_in_explorer(self):
+        """Open the last successfully built directory in Windows Explorer."""
+        path = getattr(self, '_built_dir_path', None)
+        if path and os.path.isdir(path):
+            import subprocess
+            subprocess.Popen(f'explorer "{os.path.normpath(path)}"')
+
+    def _update_dir_ui(self, status, msg, built_path=None):
         self.dir_status_lbl.configure(text=msg)
-        
+
         if status == "running":
             self.dir_status_lbl.configure(text_color=DESIGN["accent_primary"])
         elif status == "done":
             self.dir_progress.stop()
-            self.dir_progress.pack_forget() # Hide
+            self.dir_progress.pack_forget()
             self.dir_status_lbl.configure(text_color=DESIGN["success"])
-            self.btn_create_tree.configure(state="normal", text="\U0001f4ac  Ask AI & Build")
+            self.btn_create_tree.configure(state="normal", text="🚀  Build Project")
+            # Enable Open in Explorer
+            if built_path:
+                self._built_dir_path = built_path
+            self.btn_open_explorer.configure(
+                state="normal",
+                fg_color=DESIGN["success"],
+                hover_color="#2ECC71",
+                text_color="white",
+                border_color=DESIGN["success"],
+                text="📂  Open in Explorer"
+            )
         elif status == "error":
             self.dir_progress.stop()
+            self.dir_progress.pack_forget()  # Bug 1 fix: hide bar after error
             self.dir_status_lbl.configure(text_color=DESIGN["danger"])
-            self.btn_create_tree.configure(state="normal", text="\U0001f4ac  Ask AI & Build")
+            self.btn_create_tree.configure(state="normal", text="🚀  Build Project")
     
     def check_ollama_status(self):
         def check():

@@ -23,10 +23,11 @@ class ClarifyDialog(ctk.CTkToplevel):
       3. Calls on_proceed(answer) when user clicks "Proceed ▶"
     """
 
-    def __init__(self, master, task_label: str, on_proceed, **kwargs):
+    def __init__(self, master, task_label: str, on_proceed, on_cancel=None, **kwargs):
         super().__init__(master, **kwargs)
 
         self._on_proceed = on_proceed
+        self._on_cancel  = on_cancel
         self._answer = ""
 
         # --- Window setup ---
@@ -75,6 +76,20 @@ class ClarifyDialog(ctk.CTkToplevel):
         self._ai_lbl = None
         self._ai_text = ""
 
+        # ── Show an immediate 'Thinking...' placeholder so the dialog is never blank ──
+        self._thinking_lbl = ctk.CTkLabel(
+            self._scroll,
+            text="🤖  Thinking…",
+            font=("Consolas", 11), text_color="#445566",
+            anchor="w", justify="left",
+        )
+        self._thinking_lbl.grid(row=self._row, column=0, sticky="ew",
+                                padx=(8, 48), pady=(8, 2))
+        self._row += 1
+        # Pulse the dots to signal activity
+        self._pulse_count = 0
+        self._pulse_job = self.after(400, self._pulse_thinking)
+
         ctk.CTkFrame(self, height=1, fg_color="#1A1A2E").pack(fill="x", padx=20)
 
         # Input row
@@ -111,8 +126,36 @@ class ClarifyDialog(ctk.CTkToplevel):
 
     # ── Public Streaming API ───────────────────────────────────────────────
 
+    def _pulse_thinking(self):
+        """Animate the 'Thinking...' dots while waiting for Ollama."""
+        if not self._thinking_lbl or not self.winfo_exists():
+            return
+        dots = ["•", "••", "•••"]
+        self._pulse_count = (self._pulse_count + 1) % 3
+        try:
+            self._thinking_lbl.configure(
+                text=f"🤖  Thinking {dots[self._pulse_count]}"
+            )
+        except Exception:
+            return
+        self._pulse_job = self.after(500, self._pulse_thinking)
+
     def start_ai_message(self):
         """Begin a new AI bubble (call before first token)."""
+        # Remove the thinking placeholder when real content arrives
+        if self._thinking_lbl:
+            try:
+                self._thinking_lbl.destroy()
+            except Exception:
+                pass
+            self._thinking_lbl = None
+        if self._pulse_job:
+            try:
+                self.after_cancel(self._pulse_job)
+            except Exception:
+                pass
+            self._pulse_job = None
+
         self._ai_text = ""
         self._ai_lbl = ctk.CTkLabel(
             self._scroll,
@@ -171,7 +214,18 @@ class ClarifyDialog(ctk.CTkToplevel):
     def _finish(self):
         answer = self._answer
         cb = self._on_proceed
+        cancel_cb = self._on_cancel
+        # Stop the pulse animation
+        if hasattr(self, '_pulse_job') and self._pulse_job:
+            try:
+                self.after_cancel(self._pulse_job)
+            except Exception:
+                pass
         self.grab_release()
         self.destroy()
         # Fire the callback AFTER the dialog is gone
-        threading.Thread(target=lambda: cb(answer), daemon=True).start()
+        if answer == "" and cancel_cb:
+            # User skipped/closed without answering — fire cancel path too
+            threading.Thread(target=lambda: cb(answer), daemon=True).start()
+        else:
+            threading.Thread(target=lambda: cb(answer), daemon=True).start()
