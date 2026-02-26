@@ -3,6 +3,7 @@ from tkinter import filedialog, END
 import threading
 import os
 import time
+import shutil
 
 # ---IMPORTS FROM YOUR PROJECT MODULES ---
 from app.utils.config_loader import save_macro, load_macros
@@ -18,6 +19,10 @@ from app.engine.excel_agent import enrich_excel_file, suggest_excel_improvements
 from app.engine.word_agent import enrich_word_document, suggest_word_improvements
 from app.gui.recorder_tab import RecorderTab
 from app.gui.web_scraper_tab import WebScraperTab
+from app.gui.ai_chat_panel import AIChatPanel
+from app.gui.clarify_dialog import ClarifyDialog
+from app.engine.cot_engine import stream_clarifications
+from langchain_ollama import OllamaLLM
 
 # --- PREMIUM DESIGN SYSTEM ---
 DESIGN = {
@@ -285,7 +290,150 @@ class AppWindow(ctk.CTk):
             self.frames[name] = frame
             setup_func(frame)
     
+    # =========================================================
+    # SHARED REASONING TERMINAL HELPERS
+    # =========================================================
+    def _make_reasoning_terminal(self, parent):
+        """Build and return the dark hacker-style Live Reasoning Terminal widget."""
+        header = ctk.CTkFrame(parent, fg_color="transparent")
+        header.pack(fill="x", pady=(12, 4))
+        ctk.CTkLabel(
+            header, text="\U0001f916  Live Reasoning",
+            font=(DESIGN["font_mono"][0], 11, "bold"),
+            text_color=DESIGN["accent_primary"], anchor="w"
+        ).pack(side="left")
+        ctk.CTkButton(
+            header, text="\U0001f5d1 Clear", fg_color="transparent",
+            hover_color=DESIGN["bg_hover"], text_color=DESIGN["text_disabled"],
+            font=(DESIGN["font_body"][0], 11), height=24, width=60,
+            command=lambda w=None: None  # patched below
+        ).pack(side="right")
+        terminal = ctk.CTkTextbox(
+            parent,
+            font=(DESIGN["font_mono"][0], 11),
+            fg_color="#050508",
+            text_color="#00FF88",
+            border_width=1,
+            border_color=DESIGN["border_subtle"],
+            corner_radius=8,
+            height=150,
+            state="disabled",
+            wrap="word",
+        )
+        terminal.pack(fill="x", pady=(0, 8))
+        # Patch clear button to reference the actual terminal
+        header.winfo_children()[-1].configure(command=lambda: self._clear_terminal(terminal))
+        return terminal
+
+    def _stream_thought(self, widget, text):
+        """Thread-safe: insert a CoT token into the terminal widget."""
+        def _insert():
+            widget.configure(state="normal")
+            widget.insert("end", text)
+            widget.see("end")
+            widget.configure(state="disabled")
+        self.after(0, _insert)
+
+    def _clear_terminal(self, widget):
+        """Clear the reasoning terminal."""
+        widget.configure(state="normal")
+        widget.delete("0.0", "end")
+        widget.configure(state="disabled")
+
+    # =========================================================
+    # UNIVERSAL DOWNLOAD BUTTON INFRASTRUCTURE
+    # =========================================================
+    def _init_download_store(self):
+        """Call once in __init__ to set up storage dicts."""
+        if not hasattr(self, '_dl_paths'):
+            self._dl_paths = {}
+            self._dl_btns  = {}
+
+    def _make_download_btn(self, parent, key: str) -> ctk.CTkButton:
+        """
+        Create a disabled '⬇️ Save to Downloads' button.
+        Stores the reference in self._dl_btns[key].
+        """
+        self._init_download_store()
+        btn = ctk.CTkButton(
+            parent,
+            text="\u2b07\ufe0f  Save to Downloads",
+            fg_color=DESIGN["bg_input"],
+            hover_color=DESIGN["bg_hover"],
+            border_width=1,
+            border_color=DESIGN["border_subtle"],
+            text_color=DESIGN["text_disabled"],
+            font=(DESIGN["font_body"][0], 12, "bold"),
+            height=40, corner_radius=8,
+            state="disabled",
+            command=lambda k=key: self._do_download(k)
+        )
+        self._dl_btns[key] = btn
+        return btn
+
+    def _enable_download(self, key: str, filepath: str):
+        """Called when a file is ready — enables the download button."""
+        self._init_download_store()
+        if not filepath or not os.path.exists(str(filepath)):
+            return
+        self._dl_paths[key] = filepath
+        btn = self._dl_btns.get(key)
+        if btn:
+            btn.configure(
+                state="normal",
+                fg_color=DESIGN["success"],
+                hover_color="#2ECC71",
+                text_color="white",
+                border_color=DESIGN["success"],
+                text="\u2b07\ufe0f  Ready \u2014 Save to Downloads"
+            )
+
+    def _do_download(self, key: str):
+        """Copy the generated file to the system Downloads folder."""
+        filepath = self._dl_paths.get(key)
+        if not filepath or not os.path.exists(filepath):
+            return
+        try:
+            downloads = os.path.join(os.path.expanduser("~"), "Downloads")
+            os.makedirs(downloads, exist_ok=True)
+            dest = os.path.join(downloads, os.path.basename(filepath))
+            shutil.copy2(filepath, dest)
+            btn = self._dl_btns.get(key)
+            if btn:
+                btn.configure(text="\u2705  Saved to Downloads!", state="disabled")
+                self.after(3000, lambda: btn.configure(
+                    text="\u2b07\ufe0f  Ready \u2014 Save Again",
+                    state="normal"
+                ))
+        except Exception as e:
+            print(f"[Download] Error: {e}")
+
+    # =========================================================
+    # SHARED CLARIFICATION DIALOG HELPER
+    # =========================================================
+    def _run_clarification_phase(self, task_type: str, task_label: str, on_proceed):
+        """
+        Opens a centered floating ClarifyDialog, streams AI questions
+        into it, then calls on_proceed(user_answer) when user submits.
+        """
+        if not hasattr(self, '_clarify_llm'):
+            self._clarify_llm = OllamaLLM(model="llama3", temperature=0.4)
+
+        dlg = ClarifyDialog(self, task_label=task_label, on_proceed=on_proceed)
+
+        def _ask():
+            self.after(0, dlg.start_ai_message)
+            def token_cb(tok):
+                self.after(0, lambda t=tok: dlg.append_ai_token(t))
+            stream_clarifications(self._clarify_llm, task_type, token_cb)
+            self.after(0, dlg.end_ai_message)
+
+        threading.Thread(target=_ask, daemon=True).start()
+
+    # =========================================================
+
     # === VIEW 1: SMART PROCESS ===
+    # =========================================================
     def setup_process_view(self, frame):
         container = ctk.CTkFrame(frame, fg_color="transparent")
         container.pack(fill="both", expand=True, padx=40, pady=40)
@@ -327,8 +475,11 @@ class AppWindow(ctk.CTk):
         self.progress.set(0)
         self.progress.pack(fill="x", pady=(0, 16))
         
-        self.btn_run = ModernButton(form, text="⚡  Execute Automation", style="primary", height=48, font=(DESIGN["font_body"][0], 14, "bold"), command=self.start_processing)
+        self.btn_run = ModernButton(form, text="\U0001f4ac  Ask AI & Run", style="primary", height=48, font=(DESIGN["font_body"][0], 14, "bold"), command=self.start_processing)
         self.btn_run.pack(fill="x")
+
+        # --- Reasoning Terminal ---
+        self.process_terminal = self._make_reasoning_terminal(form)
         
         right_card = ModernCard(content_grid, title="Activity Log")
         right_card.grid(row=0, column=1, sticky="nsew")
@@ -336,17 +487,20 @@ class AppWindow(ctk.CTk):
         log_container.pack(fill="both", expand=True, padx=24, pady=20)
         self.txt_log = ctk.CTkTextbox(log_container, font=(DESIGN["font_mono"][0], 11), fg_color=DESIGN["bg_input"], border_width=1, border_color=DESIGN["border_subtle"], corner_radius=8, text_color=DESIGN["text_secondary"])
         self.txt_log.pack(fill="both", expand=True)
-        self.txt_log.insert("0.0", "⚡ System initialized and ready\n")
+        self.txt_log.insert("0.0", "\u26a1 System initialized and ready\n")
+        # --- Download Button ---
+        dl_btn = self._make_download_btn(log_container, "process")
+        dl_btn.pack(fill="x", pady=(8, 0))
 
     # === VIEW 2: PPT MAKER ===
     def setup_ppt_view(self, frame):
         container = ctk.CTkFrame(frame, fg_color="transparent")
         container.pack(fill="both", expand=True, padx=40, pady=40)
         center = ctk.CTkFrame(container, fg_color="transparent")
-        center.pack(expand=True)
+        center.pack(expand=True, fill="both")
         
         hero = ctk.CTkFrame(center, fg_color="transparent")
-        hero.pack(pady=(0, 40))
+        hero.pack(pady=(0, 20))
         icon_bg = ctk.CTkFrame(hero, width=80, height=80, corner_radius=40, fg_color=DESIGN["bg_tertiary"], border_width=3, border_color=DESIGN["accent_primary"])
         icon_bg.pack(); icon_bg.pack_propagate(False)
         ctk.CTkLabel(icon_bg, text="📊", font=("Arial", 40)).place(relx=0.5, rely=0.5, anchor="center")
@@ -354,19 +508,22 @@ class AppWindow(ctk.CTk):
         ctk.CTkLabel(hero, text="AI-powered slide creation with research and structure", font=(DESIGN["font_body"][0], 14), text_color=DESIGN["text_tertiary"]).pack()
         
         card = ModernCard(center, fg_color=DESIGN["bg_tertiary"])
-        card.pack(fill="x", pady=20); card.configure(width=600)
+        card.pack(fill="x", pady=12)
         card_inner = ctk.CTkFrame(card, fg_color="transparent")
-        card_inner.pack(fill="x", padx=40, pady=40)
+        card_inner.pack(fill="x", padx=40, pady=24)
         
         ctk.CTkLabel(card_inner, text="Topic", font=(DESIGN["font_body"][0], 13, "bold"), text_color=DESIGN["text_secondary"], anchor="w").pack(fill="x", pady=(0, 10))
         self.ppt_topic_entry = ModernInput(card_inner, placeholder_text="e.g., The Future of Renewable Energy", height=52)
         self.ppt_topic_entry.pack(fill="x", pady=(0, 24))
         
-        self.ppt_generate_btn = ModernButton(card_inner, text="✨  Generate Presentation", style="primary", height=52, font=(DESIGN["font_body"][0], 15, "bold"), command=self.start_ppt_generation)
-        self.ppt_generate_btn.pack(fill="x", pady=(0, 32))
+        self.ppt_generate_btn = ModernButton(card_inner, text="\U0001f4ac  Ask AI & Generate", style="primary", height=52, font=(DESIGN["font_body"][0], 15, "bold"), command=self.start_ppt_generation)
+        self.ppt_generate_btn.pack(fill="x", pady=(0, 12))
+
+        # --- Reasoning Terminal ---
+        self.ppt_terminal = self._make_reasoning_terminal(card_inner)
         
         steps_container = ctk.CTkFrame(card_inner, fg_color=DESIGN["bg_input"], corner_radius=12, border_width=1, border_color=DESIGN["border_subtle"])
-        steps_container.pack(fill="x")
+        steps_container.pack(fill="x", pady=(4, 0))
         steps_inner = ctk.CTkFrame(steps_container, fg_color="transparent")
         steps_inner.pack(fill="x", padx=20, pady=20)
         
@@ -377,17 +534,20 @@ class AppWindow(ctk.CTk):
             self.ppt_step_labels[key] = step
         
         self.ppt_status_label = ctk.CTkLabel(card_inner, text="", font=(DESIGN["font_body"][0], 13, "bold"), text_color=DESIGN["success"])
-        self.ppt_status_label.pack(pady=(20, 0))
+        self.ppt_status_label.pack(pady=(20, 8))
+        # --- Download Button ---
+        dl_btn = self._make_download_btn(card_inner, "ppt")
+        dl_btn.pack(fill="x")
 
     # === VIEW 3: PDF MAKER ===
     def setup_pdf_view(self, frame):
         container = ctk.CTkFrame(frame, fg_color="transparent")
         container.pack(fill="both", expand=True, padx=40, pady=40)
         center = ctk.CTkFrame(container, fg_color="transparent")
-        center.pack(expand=True)
+        center.pack(expand=True, fill="both")
         
         hero = ctk.CTkFrame(center, fg_color="transparent")
-        hero.pack(pady=(0, 40))
+        hero.pack(pady=(0, 20))
         icon_bg = ctk.CTkFrame(hero, width=80, height=80, corner_radius=40, fg_color=DESIGN["bg_tertiary"], border_width=3, border_color=DESIGN["danger"])
         icon_bg.pack(); icon_bg.pack_propagate(False)
         ctk.CTkLabel(icon_bg, text="📄", font=("Arial", 40)).place(relx=0.5, rely=0.5, anchor="center")
@@ -395,19 +555,22 @@ class AppWindow(ctk.CTk):
         ctk.CTkLabel(hero, text="Generate comprehensive PDFs with AI-powered content", font=(DESIGN["font_body"][0], 14), text_color=DESIGN["text_tertiary"]).pack()
         
         card = ModernCard(center, fg_color=DESIGN["bg_tertiary"])
-        card.pack(fill="x", pady=20); card.configure(width=600)
+        card.pack(fill="x", pady=12)
         card_inner = ctk.CTkFrame(card, fg_color="transparent")
-        card_inner.pack(fill="x", padx=40, pady=40)
+        card_inner.pack(fill="x", padx=40, pady=24)
         
         ctk.CTkLabel(card_inner, text="Document Subject", font=(DESIGN["font_body"][0], 13, "bold"), text_color=DESIGN["text_secondary"], anchor="w").pack(fill="x", pady=(0, 10))
         self.pdf_topic_entry = ModernInput(card_inner, placeholder_text="e.g., Essay on Quantum Computing", height=52)
         self.pdf_topic_entry.pack(fill="x", pady=(0, 24))
         
-        self.pdf_btn = ModernButton(card_inner, text="📝  Write & Export PDF", style="danger", height=52, font=(DESIGN["font_body"][0], 15, "bold"), command=self.start_pdf_generation)
-        self.pdf_btn.pack(fill="x", pady=(0, 32))
+        self.pdf_btn = ModernButton(card_inner, text="\U0001f4ac  Ask AI & Write", style="danger", height=52, font=(DESIGN["font_body"][0], 15, "bold"), command=self.start_pdf_generation)
+        self.pdf_btn.pack(fill="x", pady=(0, 12))
+
+        # --- Reasoning Terminal ---
+        self.pdf_terminal = self._make_reasoning_terminal(card_inner)
         
         steps_container = ctk.CTkFrame(card_inner, fg_color=DESIGN["bg_input"], corner_radius=12, border_width=1, border_color=DESIGN["border_subtle"])
-        steps_container.pack(fill="x")
+        steps_container.pack(fill="x", pady=(4, 0))
         steps_inner = ctk.CTkFrame(steps_container, fg_color="transparent")
         steps_inner.pack(fill="x", padx=20, pady=20)
         
@@ -418,7 +581,10 @@ class AppWindow(ctk.CTk):
             self.pdf_step_labels[key] = step
         
         self.pdf_status_label = ctk.CTkLabel(card_inner, text="", font=(DESIGN["font_body"][0], 13, "bold"), text_color=DESIGN["success"])
-        self.pdf_status_label.pack(pady=(20, 0))
+        self.pdf_status_label.pack(pady=(20, 8))
+        # --- Download Button ---
+        dl_btn = self._make_download_btn(card_inner, "pdf")
+        dl_btn.pack(fill="x")
 
     # === VIEW 4: AI ENHANCE ===
     def setup_enhance_view(self, frame):
@@ -456,13 +622,16 @@ class AppWindow(ctk.CTk):
         self.enhance_style = ctk.CTkComboBox(settings, values=["Professional", "Casual", "Academic", "Technical"], fg_color=DESIGN["bg_input"], border_color=DESIGN["border_subtle"], button_color=DESIGN["accent_primary"], dropdown_fg_color=DESIGN["bg_secondary"], height=44, corner_radius=8)
         self.enhance_style.pack(fill="x", pady=(0, 24))
         
-        self.enhance_btn_preview = ModernButton(settings, text="🔍  Analyze Suggestions", style="ghost", command=self.preview_enhancements)
+        self.enhance_btn_preview = ModernButton(settings, text="\U0001f50d  Analyze Suggestions", style="ghost", command=self.preview_enhancements)
         self.enhance_btn_preview.pack(fill="x", pady=(0, 12))
-        self.enhance_btn_apply = ModernButton(settings, text="✨  Apply Enhancements", style="success", height=48, command=self.apply_enhancements)
+        self.enhance_btn_apply = ModernButton(settings, text="\U0001f4ac  Ask AI & Enhance", style="success", height=48, font=(DESIGN["font_body"][0], 14, "bold"), command=self.apply_enhancements)
         self.enhance_btn_apply.pack(fill="x")
+
+        # --- Reasoning Terminal (left panel) ---
+        self.enhance_terminal = self._make_reasoning_terminal(settings)
         
         right_card = ModernCard(grid, title="Analysis & Output")
-        right_card.grid(row=0, column=1, sticky="nsew")
+        right_card.grid(row=0, column=1, sticky="nsew", padx=(0, 0))
         output = ctk.CTkFrame(right_card, fg_color="transparent")
         output.pack(fill="both", expand=True, padx=24, pady=20)
         self.enhance_progress = ctk.CTkProgressBar(output, progress_color=DESIGN["success"], fg_color=DESIGN["bg_input"], height=6, corner_radius=3)
@@ -471,6 +640,9 @@ class AppWindow(ctk.CTk):
         self.enhance_status.pack(pady=(0, 16))
         self.enhance_log = ctk.CTkTextbox(output, font=(DESIGN["font_mono"][0], 11), fg_color=DESIGN["bg_input"], border_width=1, border_color=DESIGN["border_subtle"], corner_radius=8, text_color=DESIGN["text_secondary"])
         self.enhance_log.pack(fill="both", expand=True)
+        # --- Download Button ---
+        dl_btn = self._make_download_btn(output, "enhance")
+        dl_btn.pack(fill="x", pady=(8, 0))
 
     # === VIEW 5: SMART FILL ===
     def setup_fill_view(self, frame):
@@ -498,10 +670,15 @@ class AppWindow(ctk.CTk):
         output_controls.pack(fill="x", padx=24, pady=(20, 0))
         self.txt_ref = ModernInput(output_controls, placeholder_text="Style reference (optional)", height=44)
         self.txt_ref.pack(fill="x", pady=(0, 16))
-        self.btn_fill = ModernButton(output_controls, text="✨  Generate Document", style="primary", height=48, command=self.run_smart_fill)
-        self.btn_fill.pack(fill="x", pady=(0, 16))
+        self.btn_fill = ModernButton(output_controls, text="\U0001f4ac  Ask AI & Fill", style="primary", height=48, command=self.run_smart_fill)
+        self.btn_fill.pack(fill="x", pady=(0, 12))
+        # --- Reasoning Terminal ---
+        self.fill_terminal = self._make_reasoning_terminal(output_controls)
         self.txt_fill_result = ctk.CTkTextbox(card3, font=(DESIGN["font_mono"][0], 11), fg_color=DESIGN["bg_input"], border_width=1, border_color=DESIGN["border_subtle"], corner_radius=8)
-        self.txt_fill_result.pack(fill="both", expand=True, padx=24, pady=(0, 20))
+        self.txt_fill_result.pack(fill="both", expand=True, padx=24, pady=(0, 8))
+        # --- Download Button ---
+        dl_btn = self._make_download_btn(card3, "fill")
+        dl_btn.pack(fill="x", padx=24, pady=(0, 16))
 
     # === VIEW 6: RECORDER ===
     def setup_recorder_view(self, frame):
@@ -563,11 +740,14 @@ class AppWindow(ctk.CTk):
             border_color=DESIGN["border_subtle"],
             corner_radius=8
         )
-        self.txt_tree.pack(fill="both", expand=True, pady=(0, 20))
+        self.txt_tree.pack(fill="both", expand=True, pady=(0, 12))
+
+        # --- Reasoning Terminal ---
+        self.dir_terminal = self._make_reasoning_terminal(inner)
         
-        # --- NEW: PROGRESS STATUS SECTION ---
+        # --- PROGRESS STATUS SECTION ---
         self.dir_status_frame = ctk.CTkFrame(inner, fg_color="transparent")
-        self.dir_status_frame.pack(fill="x", pady=(0, 10))
+        self.dir_status_frame.pack(fill="x", pady=(4, 4))
         
         self.dir_progress = ctk.CTkProgressBar(self.dir_status_frame, progress_color=DESIGN["success"], fg_color=DESIGN["bg_input"], height=6)
         self.dir_progress.set(0)
@@ -618,29 +798,37 @@ class AppWindow(ctk.CTk):
     
     def start_processing(self):
         if not hasattr(self, 'selected_file'):
-            self.log("⚠️ Please select a file first")
+            self.log("\u26a0\ufe0f Please select a file first")
             return
-        instruction = self.input_instruction.get()
-        self.progress.start()
-        self.btn_run.configure(state="disabled", text="Processing...")
-        threading.Thread(target=self.run_ai_logic, args=(self.selected_file, instruction), daemon=True).start()
-    
-    def run_ai_logic(self, path, instruction):
-        self.log(f"⚙️ Processing {os.path.basename(path)}...")
-        result = None
-        try:
-            if path.endswith(".docx"): result = process_word_document(path, instruction)
-            elif path.endswith(".xlsx"): result = process_excel_file(path, instruction)
-            else: result = "Error: Unsupported file type"
-        except Exception as e: result = f"Error: {str(e)}"
-        self.after(0, lambda: self.finish_processing(result))
+        self.btn_run.configure(state="disabled", text="Asking AI...")
+        self._clear_terminal(self.process_terminal)
+
+        def on_answer(user_context):
+            instruction = self.input_instruction.get()
+            enriched = f"{instruction}\n\nUser preferences: {user_context}" if user_context else instruction
+            self.after(0, lambda: self.progress.start())
+            thought_cb = lambda t: self._stream_thought(self.process_terminal, t)
+            path = self.selected_file
+            self.log(f"\u2699\ufe0f Processing {os.path.basename(path)}...")
+            result = None
+            try:
+                if path.endswith(".docx"): result = process_word_document(path, enriched, thought_callback=thought_cb)
+                elif path.endswith(".xlsx"): result = process_excel_file(path, enriched, thought_callback=thought_cb)
+                else: result = "Error: Unsupported file type"
+            except Exception as e: result = f"Error: {str(e)}"
+            self.after(0, lambda: self.finish_processing(result))
+
+        self._run_clarification_phase("word_process", "Smart Process", on_answer)
     
     def finish_processing(self, result):
         self.progress.stop()
         self.progress.set(1)
-        self.btn_run.configure(state="normal", text="⚡  Execute Automation")
-        if result and "Error" not in result: self.log(f"✅ Success! Output: {result}")
-        else: self.log(f"❌ {result}")
+        self.btn_run.configure(state="normal", text="\U0001f4ac  Ask AI & Run")
+        if result and "Error" not in str(result):
+            self.log(f"\u2705 Success! Output: {result}")
+            self._enable_download("process", result)
+        else:
+            self.log(f"\u274c {result}")
     
     def log(self, msg):
         timestamp = time.strftime("%H:%M:%S")
@@ -667,21 +855,36 @@ class AppWindow(ctk.CTk):
     def start_ppt_generation(self):
         topic = self.ppt_topic_entry.get()
         if not topic: return
-        self.ppt_status_label.configure(text="Starting generation...")
-        self.ppt_generate_btn.configure(state="disabled", text="Generating...")
+        self.ppt_status_label.configure(text="Asking AI for preferences...")
+        self.ppt_generate_btn.configure(state="disabled", text="Asking AI...")
         for step in self.ppt_step_labels.values(): step.set_state("pending")
-        if self.ppt_engine: threading.Thread(target=lambda: self.ppt_engine.generate_ppt(topic, self.handle_ppt_progress), daemon=True).start()
+        self._clear_terminal(self.ppt_terminal)
+
+        def on_answer(user_context):
+            thought_cb = lambda t: self._stream_thought(self.ppt_terminal, t)
+            if self.ppt_engine:
+                threading.Thread(
+                    target=lambda: self.ppt_engine.generate_ppt(
+                        f"{topic}\n\nUser preferences: {user_context}" if user_context else topic,
+                        self.handle_ppt_progress,
+                        thought_callback=thought_cb
+                    ), daemon=True
+                ).start()
+
+        self._run_clarification_phase("ppt", f"PPT: {topic[:30]}", on_answer)
     
     def handle_ppt_progress(self, step_key, status):
         self.after(0, lambda: self._update_ppt_gui_safe(step_key, status))
     
     def _update_ppt_gui_safe(self, step_key, status):
         if step_key == "final":
-            self.ppt_status_label.configure(text=f"✅ {status}")
-            self.ppt_generate_btn.configure(state="normal", text="✨  Generate Presentation")
+            fname = os.path.basename(status) if os.path.isfile(status) else status
+            self.ppt_status_label.configure(text=f"\u2705 {fname}")
+            self.ppt_generate_btn.configure(state="normal", text="\U0001f4ac  Ask AI & Generate")
+            self._enable_download("ppt", status)  # status = full file path
         elif step_key == "error":
-            self.ppt_status_label.configure(text=f"❌ {status}", text_color=DESIGN["danger"])
-            self.ppt_generate_btn.configure(state="normal", text="✨  Generate Presentation")
+            self.ppt_status_label.configure(text=f"\u274c {status}", text_color=DESIGN["danger"])
+            self.ppt_generate_btn.configure(state="normal", text="\U0001f4ac  Ask AI & Generate")
         elif step_key in self.ppt_step_labels:
             step = self.ppt_step_labels[step_key]
             if status == "running": step.set_state("active")
@@ -690,21 +893,36 @@ class AppWindow(ctk.CTk):
     def start_pdf_generation(self):
         topic = self.pdf_topic_entry.get()
         if not topic: return
-        self.pdf_status_label.configure(text="Starting generation...")
-        self.pdf_btn.configure(state="disabled", text="Generating...")
+        self.pdf_status_label.configure(text="Asking AI for preferences...")
+        self.pdf_btn.configure(state="disabled", text="Asking AI...")
         for step in self.pdf_step_labels.values(): step.set_state("pending")
-        if self.pdf_engine: threading.Thread(target=lambda: self.pdf_engine.generate_smart_pdf(topic, self.handle_pdf_progress), daemon=True).start()
+        self._clear_terminal(self.pdf_terminal)
+
+        def on_answer(user_context):
+            thought_cb = lambda t: self._stream_thought(self.pdf_terminal, t)
+            if self.pdf_engine:
+                threading.Thread(
+                    target=lambda: self.pdf_engine.generate_smart_pdf(
+                        f"{topic}\n\nUser preferences: {user_context}" if user_context else topic,
+                        self.handle_pdf_progress,
+                        thought_callback=thought_cb
+                    ), daemon=True
+                ).start()
+
+        self._run_clarification_phase("pdf", f"PDF: {topic[:30]}", on_answer)
     
     def handle_pdf_progress(self, step_key, status):
         self.after(0, lambda: self._update_pdf_gui_safe(step_key, status))
     
     def _update_pdf_gui_safe(self, step_key, status):
         if step_key == "final":
-            self.pdf_status_label.configure(text=f"✅ {status}")
-            self.pdf_btn.configure(state="normal", text="📝  Write & Export PDF")
+            fname = os.path.basename(status) if os.path.isfile(status) else status
+            self.pdf_status_label.configure(text=f"\u2705 {fname}")
+            self.pdf_btn.configure(state="normal", text="\U0001f4ac  Ask AI & Write")
+            self._enable_download("pdf", status)  # status = full file path
         elif step_key == "error":
-            self.pdf_status_label.configure(text=f"❌ {status}", text_color=DESIGN["danger"])
-            self.pdf_btn.configure(state="normal", text="📝  Write & Export PDF")
+            self.pdf_status_label.configure(text=f"\u274c {status}", text_color=DESIGN["danger"])
+            self.pdf_btn.configure(state="normal", text="\U0001f4ac  Ask AI & Write")
         elif step_key in self.pdf_step_labels:
             step = self.pdf_step_labels[step_key]
             if status == "running": step.set_state("active")
@@ -749,16 +967,35 @@ class AppWindow(ctk.CTk):
             'improve_content': True, 'improve_paragraphs': True
         }
         style = self.enhance_style.get().lower()
-        self.enhance_btn_apply.configure(state="disabled", text="Enhancing...")
+        self.enhance_btn_apply.configure(state="disabled", text="Asking AI...")
         self.enhance_progress.start()
-        threading.Thread(target=self.thread_apply_enhancements, args=(options, style), daemon=True).start()
+        self._clear_terminal(self.enhance_terminal)
+
+        options_snap = {
+            'improve_text': self.enhance_improve_text.get() == 1,
+            'auto_format': self.enhance_auto_format.get() == 1,
+            'add_summaries': self.enhance_add_summaries.get() == 1,
+            'fix_consistency': self.enhance_fix_consistency.get() == 1,
+            'improve_content': True, 'improve_paragraphs': True
+        }
+
+        def on_answer(user_context):
+            enriched_style = f"{style} \u2014 extra notes: {user_context}" if user_context else style
+            threading.Thread(
+                target=self.thread_apply_enhancements,
+                args=(options_snap, enriched_style),
+                daemon=True
+            ).start()
+
+        self._run_clarification_phase("enhance", "AI Enhance", on_answer)
     
     def thread_apply_enhancements(self, options, style):
         path = self.enhance_selected_file
         result = None
+        thought_cb = lambda t: self._stream_thought(self.enhance_terminal, t)
         try:
-            if path.endswith(".docx"): result = enrich_word_document(path, options, style)
-            elif path.endswith(".xlsx"): result = enrich_excel_file(path, options, style)
+            if path.endswith(".docx"): result = enrich_word_document(path, options, style, thought_callback=thought_cb)
+            elif path.endswith(".xlsx"): result = enrich_excel_file(path, options, style, thought_callback=thought_cb)
             elif path.endswith(".pptx"): self.ppt_enricher.enhance_presentation(path, options, style, self.handle_ppt_enhance_progress); return
         except Exception as e: result = f"Error: {str(e)}"
         self.after(0, lambda: self.finish_enhancement(result))
@@ -774,20 +1011,33 @@ class AppWindow(ctk.CTk):
     def finish_enhancement(self, result):
         self.enhance_progress.stop()
         self.enhance_progress.set(1)
-        self.enhance_btn_apply.configure(state="normal", text="✨  Apply Enhancements")
+        self.enhance_btn_apply.configure(state="normal", text="\U0001f4ac  Ask AI & Enhance")
         self.enhance_log.insert(END, f"\n{result}\n")
         self.enhance_status.configure(text="Complete")
+        if result and isinstance(result, str) and os.path.isfile(result):
+            self._enable_download("enhance", result)
     
     def run_smart_fill(self):
         data = self.txt_data.get("0.0", END).strip()
         template = self.txt_template.get("0.0", END).strip()
         ref = self.txt_ref.get().strip()
         if not data or not template: return
-        self.btn_fill.configure(state="disabled", text="Generating...")
-        threading.Thread(target=self.thread_smart_fill, args=(data, template, ref), daemon=True).start()
-    
-    def thread_smart_fill(self, data, template, ref):
-        ai_text = smart_fill_content(data, template, ref)
+        self.btn_fill.configure(state="disabled", text="Asking AI...")
+        self._clear_terminal(self.fill_terminal)
+
+        def on_answer(user_context):
+            threading.Thread(
+                target=self.thread_smart_fill,
+                args=(data, template, ref, user_context),
+                daemon=True
+            ).start()
+
+        self._run_clarification_phase("smart_fill", "Smart Fill", on_answer)
+
+    def thread_smart_fill(self, data, template, ref, user_context=""):
+        thought_cb = lambda t: self._stream_thought(self.fill_terminal, t)
+        enriched_data = f"{data}\n\nUser notes: {user_context}" if user_context else data
+        ai_text = smart_fill_content(enriched_data, template, ref, thought_callback=thought_cb)
         filename = f"Generated_Doc_{int(time.time())}.pdf"
         output_path = os.path.join("user_data", filename)
         os.makedirs("user_data", exist_ok=True)
@@ -797,7 +1047,9 @@ class AppWindow(ctk.CTk):
     def finish_smart_fill(self, text_result, pdf_path):
         self.txt_fill_result.delete("0.0", END)
         self.txt_fill_result.insert("0.0", text_result)
-        self.btn_fill.configure(state="normal", text="✨  Generate Document")
+        self.btn_fill.configure(state="normal", text="\U0001f4ac  Ask AI & Fill")
+        if pdf_path and os.path.isfile(str(pdf_path)):
+            self._enable_download("fill", pdf_path)
     
     # Directory Logic (Modified for OMG Features)
     def select_target_dir(self):
@@ -810,18 +1062,26 @@ class AppWindow(ctk.CTk):
         text = self.txt_tree.get("0.0", END).strip()
         if not text: return
         target = getattr(self, 'target_dir', os.getcwd())
-        
-        # 1. Update UI to "Running" state
-        self.btn_create_tree.configure(state="disabled", text="BUILDING...")
-        self.dir_progress.pack(fill="x", pady=(0, 5)) # Show progress bar
-        self.dir_progress.start()
-        
-        # 2. Callback for real-time updates
-        def on_progress(status, msg):
-            self.after(0, lambda: self._update_dir_ui(status, msg))
 
-        # 3. Run Engine
-        create_directory_from_text(target, text, on_progress)
+        self.btn_create_tree.configure(state="disabled", text="Asking AI...")
+        self._clear_terminal(self.dir_terminal)
+
+        def on_answer(user_context):
+            self.after(0, lambda: self.dir_progress.pack(fill="x", pady=(0, 5)))
+            self.after(0, self.dir_progress.start)
+
+            def on_progress(status, msg):
+                self.after(0, lambda: self._update_dir_ui(status, msg))
+
+            def on_thought(token):
+                self._stream_thought(self.dir_terminal, token)
+
+            enriched_tree = (
+                f"{text}\n\n# User notes: {user_context}" if user_context else text
+            )
+            create_directory_from_text(target, enriched_tree, on_progress, thought_callback=on_thought)
+
+        self._run_clarification_phase("directory", "Directory Maker", on_answer)
 
     def _update_dir_ui(self, status, msg):
         self.dir_status_lbl.configure(text=msg)
@@ -832,11 +1092,11 @@ class AppWindow(ctk.CTk):
             self.dir_progress.stop()
             self.dir_progress.pack_forget() # Hide
             self.dir_status_lbl.configure(text_color=DESIGN["success"])
-            self.btn_create_tree.configure(state="normal", text="🚀  Build Project")
+            self.btn_create_tree.configure(state="normal", text="\U0001f4ac  Ask AI & Build")
         elif status == "error":
             self.dir_progress.stop()
             self.dir_status_lbl.configure(text_color=DESIGN["danger"])
-            self.btn_create_tree.configure(state="normal", text="🚀  Build Project")
+            self.btn_create_tree.configure(state="normal", text="\U0001f4ac  Ask AI & Build")
     
     def check_ollama_status(self):
         def check():

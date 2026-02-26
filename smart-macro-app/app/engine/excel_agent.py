@@ -2,25 +2,41 @@ import pandas as pd
 import os
 from app.ai.llm_client import query_ollama
 from app.ai.prompts import get_prompt
+from langchain_ollama import OllamaLLM
+from app.engine.cot_engine import stream_cot_plan, make_excel_plan_prompt, make_enhance_plan_prompt
 
-def process_excel_file(file_path, instruction):
+# Shared LLM for CoT planning
+_plan_llm = None
+def _get_plan_llm():
+    global _plan_llm
+    if _plan_llm is None:
+        _plan_llm = OllamaLLM(model="llama3", temperature=0.5)
+    return _plan_llm
+
+
+def process_excel_file(file_path, instruction, thought_callback=None):
     """
     Reads an Excel file, applies AI to the first column, and saves the result.
+    thought_callback: optional callable(str) for streaming CoT reasoning.
     """
     try:
         print(f"Reading Excel: {file_path}")
         df = pd.read_excel(file_path)
-        
-        # Default to first column
         col_name = df.columns[0]
+
+        # ── Agentic CoT: Stream planning thoughts before processing ──
+        if thought_callback:
+            thought_callback(f"◆ File: {os.path.basename(file_path)}\n\n")
+            col_names = list(df.columns)
+            plan_prompt = make_excel_plan_prompt(instruction, len(df), col_names)
+            stream_cot_plan(_get_plan_llm(), plan_prompt, thought_callback)
+            thought_callback("\n\n─── Processing Cells ───\n\n")
         
         results = []
         for val in df[col_name]:
             if pd.isna(val) or str(val).strip() == "":
                 results.append("")
                 continue
-            
-            # Use the helper to format the prompt
             prompt = get_prompt(instruction, str(val))
             resp = query_ollama(prompt)
             results.append(resp)
@@ -38,22 +54,10 @@ def process_excel_file(file_path, instruction):
         return f"Error: {e}"
 
 
-def enrich_excel_file(file_path, options, style="professional"):
+def enrich_excel_file(file_path, options, style="professional", thought_callback=None):
     """
     Enhance an existing Excel file with AI-powered improvements.
-    
-    Args:
-        file_path: Path to Excel file
-        options: Dict of enhancement options {
-            'improve_content': bool,
-            'auto_format': bool,
-            'add_summaries': bool,
-            'fix_consistency': bool
-        }
-        style: Target style for text improvements
-    
-    Returns:
-        Path to enhanced Excel file
+    thought_callback: optional callable(str) for streaming CoT reasoning.
     """
     try:
         from app.engine.content_enricher import ContentEnricher
@@ -65,9 +69,14 @@ def enrich_excel_file(file_path, options, style="professional"):
         
         print(f"Reading Excel: {file_path}")
         df = pd.read_excel(file_path)
-        
-        # Identify text columns (non-numeric)
         text_columns = df.select_dtypes(include=['object']).columns.tolist()
+
+        # ── Agentic CoT: Stream planning thoughts before enhancement ──
+        if thought_callback:
+            thought_callback(f"◆ Enhancing: {os.path.basename(file_path)}\n\n")
+            plan_prompt = make_enhance_plan_prompt("Excel spreadsheet (.xlsx)", options, style)
+            stream_cot_plan(_get_plan_llm(), plan_prompt, thought_callback)
+            thought_callback("\n\n─── Applying Enhancements ───\n\n")
         
         # Improve content in text columns
         if options.get('improve_content', False) and text_columns:
@@ -78,10 +87,8 @@ def enrich_excel_file(file_path, options, style="professional"):
                     if pd.isna(val) or str(val).strip() == "":
                         improved_values.append(val)
                     else:
-                        # Improve text
                         improved = enricher.improve_text(str(val), style=style, intensity="light")
                         improved_values.append(improved)
-                
                 df[col] = improved_values
         
         # Fix consistency
@@ -97,10 +104,8 @@ def enrich_excel_file(file_path, options, style="professional"):
         if options.get('add_summaries', False):
             print("Adding summary insights...")
             summary_row = {}
-            
             for col in df.columns:
                 if col in text_columns:
-                    # Text summary
                     all_text = " ".join([str(v) for v in df[col] if not pd.isna(v)])
                     if all_text.strip():
                         summary = enricher.summarize_content(all_text[:500], max_length=30)
@@ -108,53 +113,40 @@ def enrich_excel_file(file_path, options, style="professional"):
                     else:
                         summary_row[col] = ""
                 else:
-                    # Numeric summary
                     try:
                         summary_row[col] = f"Total: {df[col].sum():.2f}"
                     except:
                         summary_row[col] = ""
-            
-            # Append summary row
             df = pd.concat([df, pd.DataFrame([summary_row])], ignore_index=True)
         
-        # Save to temporary file first
         base_name = os.path.basename(file_path)
         name_without_ext = os.path.splitext(base_name)[0]
         dir_name = os.path.dirname(file_path)
         temp_path = os.path.join(dir_name, f"temp_{int(time.time())}.xlsx")
-        
         df.to_excel(temp_path, index=False)
         
-        # Apply formatting if requested
         if options.get('auto_format', False):
             print("Applying formatting...")
             wb = load_workbook(temp_path)
             ws = wb.active
             
-            # Header formatting
             header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
             header_font = Font(bold=True, color="FFFFFF", size=12)
-            
             for cell in ws[1]:
                 cell.fill = header_fill
                 cell.font = header_font
                 cell.alignment = Alignment(horizontal="center", vertical="center")
             
-            # Border for all cells
             thin_border = Border(
-                left=Side(style='thin'),
-                right=Side(style='thin'),
-                top=Side(style='thin'),
-                bottom=Side(style='thin')
+                left=Side(style='thin'), right=Side(style='thin'),
+                top=Side(style='thin'), bottom=Side(style='thin')
             )
-            
             for row in ws.iter_rows(min_row=1, max_row=ws.max_row, max_col=ws.max_column):
                 for cell in row:
                     cell.border = thin_border
-                    if cell.row > 1:  # Non-header cells
+                    if cell.row > 1:
                         cell.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
             
-            # Adjust column widths
             for column in ws.columns:
                 max_length = 0
                 column_letter = column[0].column_letter
@@ -167,17 +159,13 @@ def enrich_excel_file(file_path, options, style="professional"):
                 adjusted_width = min(max_length + 2, 50)
                 ws.column_dimensions[column_letter].width = adjusted_width
             
-            # Save formatted file
             final_path = os.path.join(dir_name, f"{name_without_ext}_ENHANCED_{int(time.time())}.xlsx")
             wb.save(final_path)
-            
-            # Remove temp file
             try:
                 os.remove(temp_path)
             except:
                 pass
         else:
-            # Just rename temp file
             final_path = os.path.join(dir_name, f"{name_without_ext}_ENHANCED_{int(time.time())}.xlsx")
             os.rename(temp_path, final_path)
         
@@ -190,15 +178,7 @@ def enrich_excel_file(file_path, options, style="professional"):
 
 
 def suggest_excel_improvements(file_path):
-    """
-    Analyze Excel file and provide improvement suggestions.
-    
-    Args:
-        file_path: Path to Excel file
-    
-    Returns:
-        List of suggestions
-    """
+    """Analyze Excel file and provide improvement suggestions."""
     try:
         from app.engine.content_enricher import ContentEnricher
         
@@ -207,23 +187,17 @@ def suggest_excel_improvements(file_path):
         
         suggestions = []
         suggestions.append("=== Excel Data Analysis ===\n")
-        
-        # Basic stats
         suggestions.append(f"Total Rows: {len(df)}")
         suggestions.append(f"Total Columns: {len(df.columns)}")
         suggestions.append("")
         
-        # Check for empty cells
         empty_cells = df.isnull().sum().sum()
         if empty_cells > 0:
             suggestions.append(f"⚠️ Found {empty_cells} empty cells - consider filling or removing")
         
-        # Check text columns for improvements
         text_columns = df.select_dtypes(include=['object']).columns.tolist()
         if text_columns:
             suggestions.append(f"\n📝 Text columns found: {', '.join(text_columns)}")
-            
-            # Sample first text column for suggestions
             if len(df) > 0:
                 sample_text = " ".join([str(v) for v in df[text_columns[0]].head(3) if not pd.isna(v)])
                 if sample_text:

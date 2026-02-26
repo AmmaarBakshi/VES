@@ -1,9 +1,28 @@
 from app.ai.llm_client import query_ollama
+from langchain_ollama import OllamaLLM
+from app.engine.cot_engine import stream_cot_plan, make_smart_fill_plan_prompt
 
-def smart_fill_content(data_text, template_text, reference_text="None"):
+# Shared LLM for CoT planning
+_plan_llm = None
+def _get_plan_llm():
+    global _plan_llm
+    if _plan_llm is None:
+        _plan_llm = OllamaLLM(model="llama3", temperature=0.5)
+    return _plan_llm
+
+
+def smart_fill_content(data_text, template_text, reference_text="None", thought_callback=None):
     """
     Merges data into a template using a reference style.
+    thought_callback: optional callable(str) for streaming CoT reasoning.
     """
+    # ── Agentic CoT: Stream planning thoughts before generating ──
+    if thought_callback:
+        thought_callback("◆ Analyzing template and data...\n\n")
+        plan_prompt = make_smart_fill_plan_prompt(template_text, data_text)
+        stream_cot_plan(_get_plan_llm(), plan_prompt, thought_callback)
+        thought_callback("\n\n─── Generating Document ───\n\n")
+
     prompt = f"""
     You are a smart document filler.
     

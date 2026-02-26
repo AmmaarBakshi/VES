@@ -3,6 +3,7 @@ import threading
 import re
 import time
 from langchain_ollama import OllamaLLM
+from app.engine.cot_engine import stream_cot_plan, make_dir_plan_prompt
 
 class SmartScaffolder:
     def __init__(self):
@@ -50,9 +51,10 @@ class SmartScaffolder:
 # Init Engine
 scaffolder = SmartScaffolder()
 
-def create_directory_from_text(root_path, tree_text, update_callback=None):
+def create_directory_from_text(root_path, tree_text, update_callback=None, thought_callback=None):
     """
-    Robust parser with REAL-TIME UI UPDATES.
+    Robust parser with REAL-TIME UI UPDATES and Agentic Chain-of-Thought streaming.
+    thought_callback(str): called token-by-token with CoT reasoning text.
     """
     lines = tree_text.split('\n')
     path_stack = [(-1, root_path)]
@@ -66,9 +68,17 @@ def create_directory_from_text(root_path, tree_text, update_callback=None):
             # 2. Detect Context
             project_context = scaffolder.identify_context(tree_text)
             if update_callback: update_callback("running", f"💡 Detected Stack: {project_context}")
-            time.sleep(1) # Small pause so user sees the text
 
-            # 3. Build Loop
+            # 3. ── Agentic CoT: Stream the plan before doing any work ──
+            if thought_callback:
+                thought_callback(f"◆ Stack detected: {project_context}\n\n")
+                plan_prompt = make_dir_plan_prompt(tree_text, project_context)
+                stream_cot_plan(scaffolder.llm, plan_prompt, thought_callback)
+                thought_callback("\n\n─── Executing Plan ───\n\n")
+
+            time.sleep(0.3)
+
+            # 4. Build Loop
             for line in lines:
                 if not line.strip(): continue
                 
@@ -97,9 +107,7 @@ def create_directory_from_text(root_path, tree_text, update_callback=None):
                 is_file = "." in clean_name and not clean_name.startswith("docker") 
                 
                 if is_file:
-                    # UPDATE UI: Show exactly what file is being written
                     if update_callback: update_callback("running", f"📝 Writing code for {clean_name}...")
-                    
                     content = scaffolder.generate_content(clean_name, tree_text, project_context)
                     try:
                         with open(full_path, 'w', encoding='utf-8') as f:
@@ -110,7 +118,7 @@ def create_directory_from_text(root_path, tree_text, update_callback=None):
                     os.makedirs(full_path, exist_ok=True)
                     path_stack.append((raw_indent, full_path))
 
-            # 4. Notify Finish
+            # 5. Notify Finish
             if update_callback: update_callback("done", f"✅ Success! Project built at {root_path}")
             
         except Exception as e:
