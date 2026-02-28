@@ -48,7 +48,7 @@ class WebScraperTab(ctk.CTkFrame):
         
         self.logo_label = ctk.CTkLabel(
             self.sidebar_frame, 
-            text="Web Scraper", 
+            text="Web Recorder", 
             font=ctk.CTkFont(size=20, weight="bold")
         )
         self.logo_label.grid(row=0, column=0, padx=20, pady=(20, 10))

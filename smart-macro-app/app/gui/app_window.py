@@ -19,6 +19,7 @@ from app.engine.excel_agent import enrich_excel_file, suggest_excel_improvements
 from app.engine.word_agent import enrich_word_document, suggest_word_improvements
 from app.gui.recorder_tab import RecorderTab
 from app.gui.web_scraper_tab import WebScraperTab
+from app.gui.batch_tab import BatchTab
 from app.gui.ai_chat_panel import AIChatPanel
 from app.gui.clarify_dialog import ClarifyDialog
 from app.engine.cot_engine import stream_clarifications
@@ -283,7 +284,7 @@ class AppWindow(ctk.CTk):
         self.content_area.grid_rowconfigure(0, weight=1)
     
     def init_all_views(self):
-        views = [("Smart Process", "⚙️", self.setup_process_view), ("PPT Maker", "📊", self.setup_ppt_view), ("Smart PDF", "📄", self.setup_pdf_view), ("AI Enhance", "✨", self.setup_enhance_view), ("Smart Fill", "📝", self.setup_fill_view), ("Recorder", "🎙️", self.setup_recorder_view), ("Web Scraper", "🌐", self.setup_web_scraper_view), ("Directory", "📁", self.setup_dir_view)]
+        views = [("Smart Process", "⚙️", self.setup_process_view), ("PPT Maker", "📊", self.setup_ppt_view), ("Smart PDF", "📄", self.setup_pdf_view), ("AI Enhance", "✨", self.setup_enhance_view), ("Smart Fill", "📝", self.setup_fill_view), ("Batch", "⚡", self.setup_batch_view), ("Recorder", "🎙️", self.setup_recorder_view), ("Web Recorder", "🌐", self.setup_web_scraper_view), ("Directory", "📁", self.setup_dir_view)]
         for name, icon, setup_func in views:
             self.create_nav_button(name, icon)
             frame = ctk.CTkFrame(self.content_area, fg_color="transparent")
@@ -693,12 +694,19 @@ class AppWindow(ctk.CTk):
     def setup_web_scraper_view(self, frame):
         container = ctk.CTkFrame(frame, fg_color="transparent")
         container.pack(fill="both", expand=True, padx=40, pady=40)
-        card = ModernCard(container, title="Web Scraper Recorder")
+        card = ModernCard(container, title="Web Recorder")
         card.pack(fill="both", expand=True)
         self.web_scraper_ui = WebScraperTab(card)
         self.web_scraper_ui.pack(fill="both", expand=True, padx=24, pady=20)
 
-    # === VIEW 8: DIRECTORY ===
+    # === VIEW 8: BATCH PROCESSOR ===
+    def setup_batch_view(self, frame):
+        container = ctk.CTkFrame(frame, fg_color="transparent")
+        container.pack(fill="both", expand=True, padx=40, pady=30)
+        self.batch_ui = BatchTab(container)
+        self.batch_ui.pack(fill="both", expand=True)
+
+    # === VIEW 9: DIRECTORY ===
     def setup_dir_view(self, frame):
         container = ctk.CTkFrame(frame, fg_color="transparent")
         container.pack(fill="both", expand=True, padx=40, pady=40)

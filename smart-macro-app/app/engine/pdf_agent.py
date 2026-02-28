@@ -1,6 +1,6 @@
 import threading
 import os
-from langchain_community.llms import Ollama
+from langchain_ollama import OllamaLLM
 from app.engine.cot_engine import stream_cot_plan, make_pdf_plan_prompt
 
 # IMPORTS: We import the function from the neighboring file 'pdf_maker.py'
@@ -12,7 +12,7 @@ except ImportError:
 class PDFAgent:
     def __init__(self):
         # Ensure Ollama is running in your terminal!
-        self.llm = Ollama(model="llama3")
+        self.llm = OllamaLLM(model="llama3")
 
     def generate_smart_pdf(self, topic, update_callback, thought_callback=None):
         """
