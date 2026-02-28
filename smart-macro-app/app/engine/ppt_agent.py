@@ -5,7 +5,6 @@ import json
 import re
 import time
 import tempfile
-import hashlib
 import requests
 from pptx import Presentation
 from pptx.util import Pt, Inches, Emu
@@ -56,13 +55,14 @@ def _save_image_bytes(content: bytes, slide_index: int) -> str:
     return tmp
 
 
-def _short_keyword(keyword: str, max_words: int = 2) -> str:
+def _short_keyword(keyword: str, max_words: int = 3) -> str:
     """
-    Extract the most meaningful 1-2 words from a multi-word phrase.
+    Extract the most meaningful 1-3 words from a multi-word phrase.
     LoremFlickr matches best with short, concrete nouns.
     Strip filler words (the, a, an, of, in, on, for, with, by).
     """
-    stop = {"the", "a", "an", "of", "in", "on", "for", "with", "by", "and", "or", "at"}
+    stop = {"the", "a", "an", "of", "in", "on", "for", "with", "by", "and", "or", "at",
+            "is", "are", "was", "were", "be", "to", "it", "its", "this", "that"}
     words = [w for w in keyword.lower().split() if w not in stop]
     return ",".join(words[:max_words]) if words else keyword.split()[0]
 
@@ -72,26 +72,28 @@ def _is_real_image(content: bytes) -> bool:
     return (content[:3] == b'\xff\xd8\xff') or (content[:4] == b'\x89PNG')
 
 
-def _try_loremflickr(keyword: str, slide_index: int) -> str | None:
+def _try_loremflickr(keyword: str, slide_index: int, slide_title: str = "") -> str | None:
     """
     LoremFlickr with a UNIQUE random seed per slide.
-    `?random=N` forces LoremFlickr to rotate through its library
-    instead of returning the same cached top-result every time.
-    Short keywords (1-2 concrete words) give best relevance.
+    Tries the keyword first, then falls back to the slide title words.
     """
-    try:
-        short_kw = _short_keyword(keyword, max_words=2)
-        # Each slide gets a different slot in LoremFlickr's library
-        seed = (slide_index * 9973 + int(time.time()) % 1000) % 100000
-        url  = f"https://loremflickr.com/800/600/{short_kw}/all?random={seed}"
-        resp = requests.get(url, headers=_HEADERS, timeout=20, allow_redirects=True)
-        if resp.status_code == 200 and len(resp.content) > 8000 and _is_real_image(resp.content):
-            path = _save_image_bytes(resp.content, slide_index)
-            print(f"[IMG] LoremFlickr OK  slide {slide_index}  kw='{short_kw}' seed={seed}")
-            return path
-        print(f"[IMG] LoremFlickr miss slide {slide_index} ({resp.status_code}, {len(resp.content)} bytes)")
-    except Exception as e:
-        print(f"[IMG] LoremFlickr error slide {slide_index}: {e}")
+    candidates = [keyword]
+    if slide_title and slide_title.lower() != keyword.lower():
+        candidates.append(slide_title)
+
+    for attempt, kw in enumerate(candidates):
+        try:
+            short_kw = _short_keyword(kw, max_words=3)
+            seed = (slide_index * 9973 + attempt * 7919 + int(time.time()) % 1000) % 100000
+            url  = f"https://loremflickr.com/800/600/{short_kw}/all?random={seed}"
+            resp = requests.get(url, headers=_HEADERS, timeout=20, allow_redirects=True)
+            if resp.status_code == 200 and len(resp.content) > 8000 and _is_real_image(resp.content):
+                path = _save_image_bytes(resp.content, slide_index)
+                print(f"[IMG] LoremFlickr OK  slide {slide_index}  kw='{short_kw}' seed={seed}")
+                return path
+            print(f"[IMG] LoremFlickr miss slide {slide_index} attempt {attempt} ({resp.status_code})")
+        except Exception as e:
+            print(f"[IMG] LoremFlickr error slide {slide_index}: {e}")
     return None
 
 
@@ -159,42 +161,23 @@ def _try_wikimedia_search(keyword: str, slide_index: int) -> str | None:
     return None
 
 
-def _try_picsum(keyword: str, slide_index: int) -> str | None:
-    """
-    Picsum Photos – guaranteed last-resort fallback.
-    Seed = slide_index * large_prime + keyword_hash ensures EVERY slide
-    gets a visually distinct photo even when all other sources fail.
-    """
-    try:
-        kw_hash = int(hashlib.md5(keyword.encode()).hexdigest()[:8], 16)
-        seed    = (slide_index * 99991 + kw_hash) % 1_000_000
-        url     = f"https://picsum.photos/seed/{seed}/800/600"
-        resp    = requests.get(url, headers=_HEADERS, timeout=15, allow_redirects=True)
-        if resp.status_code == 200 and len(resp.content) > 5000 and _is_real_image(resp.content):
-            path = _save_image_bytes(resp.content, slide_index)
-            print(f"[IMG] Picsum      OK  slide {slide_index} (seed={seed})")
-            return path
-    except Exception as e:
-        print(f"[IMG] Picsum error slide {slide_index}: {e}")
-    return None
-
-
 def download_slide_image(keyword: str, slide_index: int, slide_title: str = "") -> str | None:
     """
-    4-source fallback chain — Wikipedia-first strategy.
-    Because the LLM now outputs exact Wikipedia nouns, we query
-    Wikipedia first to get the official encyclopedic thumbnail,
-    guaranteeing 100% contextual relevance.
+    3-source fallback chain — Wikipedia-first strategy.
+    Returns None if no relevant image found (slide goes full-width text).
+    NO random photo fallback — irrelevant images are worse than none.
 
-    Chain: Wikipedia REST → Wikimedia Commons → LoremFlickr → Picsum
+    Chain: Wikipedia REST → Wikimedia Commons → LoremFlickr (with title fallback)
     """
     print(f"[IMG] Fetching slide {slide_index}: keyword='{keyword}'  title='{slide_title}'")
-    return (
-        _try_wikipedia_thumbnail(keyword, slide_index)        # 1. Exact noun → Wikipedia article thumbnail
-        or _try_wikimedia_search(keyword, slide_index)        # 2. Commons encyclopedic search
-        or _try_loremflickr(keyword, slide_index)             # 3. Themed stock photo
-        or _try_picsum(keyword, slide_index)                  # 4. Guaranteed fallback
+    result = (
+        _try_wikipedia_thumbnail(keyword, slide_index)                       # 1. Exact noun → Wikipedia article thumbnail
+        or _try_wikimedia_search(keyword, slide_index)                       # 2. Commons encyclopedic search
+        or _try_loremflickr(keyword, slide_index, slide_title=slide_title)   # 3. Themed stock photo (tries keyword + title)
     )
+    if result is None:
+        print(f"[IMG] No relevant image found for slide {slide_index} — using full-width text layout")
+    return result
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -243,7 +226,8 @@ def _add_text_box(slide, left, top, width, height,
 
 
 def _add_bullet_box(slide, left, top, width, height, points: list):
-    """Add a formatted bullet-point text box."""
+    """Add a formatted bullet-point text box with sub-bullet support.
+    Lines starting with '- ' are rendered as indented sub-bullets."""
     txBox = slide.shapes.add_textbox(left, top, width, height)
     tf    = txBox.text_frame
     tf.word_wrap = True
@@ -251,29 +235,51 @@ def _add_bullet_box(slide, left, top, width, height, points: list):
 
     first = True
     for point in points:
+        raw = str(point).replace("**", "").strip()
+        is_sub = raw.startswith("- ") or raw.startswith("• ")
+        if is_sub:
+            raw = raw[2:].strip()
+
         if first:
             p = tf.paragraphs[0]
             first = False
         else:
             p = tf.add_paragraph()
 
-        p.space_before = Pt(6)
-        p.space_after  = Pt(6)
+        if is_sub:
+            p.space_before = Pt(2)
+            p.space_after  = Pt(2)
+            # Indentation for sub-bullets
+            indent_run = p.add_run()
+            indent_run.text = "     ○  "
+            indent_run.font.size  = Pt(12)
+            indent_run.font.color.rgb = RGBColor(0x66, 0xBB, 0xEE)  # lighter blue
+            indent_run.font.bold  = False
+            indent_run.font.name  = "Segoe UI"
 
-        # Bullet dot
-        bullet_run = p.add_run()
-        bullet_run.text = "▸  "
-        bullet_run.font.size  = Pt(14)
-        bullet_run.font.color.rgb = C_ACCENT
-        bullet_run.font.bold  = True
-        bullet_run.font.name  = "Segoe UI"
+            text_run = p.add_run()
+            text_run.text = raw
+            text_run.font.size  = Pt(12)
+            text_run.font.color.rgb = RGBColor(0xCC, 0xCC, 0xCC)  # subtle grey
+            text_run.font.name  = "Segoe UI"
+        else:
+            p.space_before = Pt(5)
+            p.space_after  = Pt(3)
 
-        # Content text
-        text_run = p.add_run()
-        text_run.text = str(point).replace("**", "").strip()
-        text_run.font.size  = Pt(14)
-        text_run.font.color.rgb = C_WHITE
-        text_run.font.name  = "Segoe UI"
+            # Bullet dot
+            bullet_run = p.add_run()
+            bullet_run.text = "▸  "
+            bullet_run.font.size  = Pt(15)
+            bullet_run.font.color.rgb = C_ACCENT
+            bullet_run.font.bold  = True
+            bullet_run.font.name  = "Segoe UI"
+
+            # Content text
+            text_run = p.add_run()
+            text_run.text = raw
+            text_run.font.size  = Pt(15)
+            text_run.font.color.rgb = C_WHITE
+            text_run.font.name  = "Segoe UI"
 
     return txBox
 
@@ -438,37 +444,20 @@ class PPTGenerator:
                 update_callback("step_1", "running")
 
                 prompt = (
-                    f"You are an expert professor and keynote speaker. "
-                    f"Create a 5-slide presentation about '{topic}'.\n"
-                    "REQUIREMENTS:\n"
-                    "1. Content: Write 3-4 DETAILED bullet points per slide. Explain the 'Why' and 'How'.\n"
-                    "2. Script: Write a 150-word speaker speech in the 'notes' field.\n"
-                    "3. Structure: Slide 1 is Title. Slides 2-5 are Content.\n"
-                    "4. Image Keyword: For EACH CONTENT slide, provide an 'image_keyword' field.\n"
-                    "   STRICT RULES for image_keyword:\n"
-                    "   - Use ONLY 1-2 concrete, specific nouns. Think exactly like someone searching Wikipedia.\n"
-                    "   - The keyword must be a real physical object or place with its own Wikipedia article.\n"
-                    "   - GOOD examples: 'Solar panel', 'DNA helix', 'Roman Colosseum', 'Microchip', 'Telescope', 'Steam engine'.\n"
-                    "   - BAD examples: 'innovation', 'success', 'growth', 'technology', 'future' (too abstract — NEVER use these).\n"
-                    "   - BAD examples: 'aerial view of solar panels in desert' (too long — NEVER use phrases).\n\n"
-                    "OUTPUT: Return ONLY a valid JSON array. No markdown, no explanation, no extra text.\n"
-                    "[\n"
-                    "  {\n"
-                    "    \"type\": \"title\",\n"
-                    "    \"title\": \"Catchy Title Here\",\n"
-                    "    \"subtitle\": \"Professional Subtitle\",\n"
-                    "    \"notes\": \"Opening speech 150 words...\"\n"
-                    "  },\n"
-                    "  {\n"
-                    "    \"type\": \"content\",\n"
-                    "    \"title\": \"Slide Title\",\n"
-                    "    \"content\": [\"Point 1: Detailed explanation...\", \"Point 2: Evidence...\"],\n"
-                    "    \"image_keyword\": \"Solar panel\",\n"
-                    "    \"notes\": \"Speaker notes 150 words...\"\n"
-                    "  }\n"
-                    "]"
+                    f"Create a board-meeting quality 6-slide presentation about '{topic}'.\n\n"
+                    "RULES:\n"
+                    "1. Slide 1 = Title slide. Slides 2-6 = Content slides.\n"
+                    "2. Each content slide: 5-6 bullet points with specific data, named examples, and percentages.\n"
+                    "   Include 1-2 sub-bullets (prefix with '- ') under key points for supporting detail.\n"
+                    "3. Executive tone — every bullet must inform, quantify, or recommend.\n"
+                    "4. Each slide has a 'notes' field with a 100-word speaker script.\n"
+                    "5. Each content slide has an 'image_keyword' field: an exact Wikipedia article title (1-2 concrete nouns).\n"
+                    "   GOOD: 'Solar panel', 'Semiconductor'. BAD: 'innovation', 'growth'.\n\n"
+                    "Return ONLY a JSON array, no markdown fences, no explanation:\n"
+                    '[{"type":"title","title":"...","subtitle":"...","notes":"..."},'
+                    '{"type":"content","title":"...","content":["Point 1","- Sub-detail","Point 2"],'
+                    '"image_keyword":"...","notes":"..."},...]'
                 )
-
                 response = self.llm.invoke(prompt)
                 update_callback("step_1", "done")
 
@@ -528,36 +517,98 @@ class PPTGenerator:
 
     # ── JSON extraction ───────────────────────────────────────────────────────
     def _extract_json(self, text):
+        """Robust multi-strategy JSON parser for LLM output."""
+        if not text or not text.strip():
+            print("[DEBUG] Empty LLM response")
+            return None
+
+        # Strip markdown fences if present (```json ... ``` or ``` ... ```)
+        cleaned = re.sub(r'```(?:json)?\s*', '', text).strip()
+        cleaned = re.sub(r'```\s*$', '', cleaned).strip()
+
+        # Strategy 1: Direct parse
         try:
-            match = re.search(r"\[.*\]", text, re.DOTALL)
+            match = re.search(r'\[.*\]', cleaned, re.DOTALL)
             if match:
-                return json.loads(match.group(0))
-        except Exception:
-            pass
+                result = json.loads(match.group(0))
+                if isinstance(result, list) and len(result) > 0:
+                    print(f"[DEBUG] JSON parsed OK: {len(result)} slides")
+                    return result
+        except json.JSONDecodeError as e:
+            print(f"[DEBUG] Strategy 1 failed: {e}")
+
+        # Strategy 2: Repair truncated JSON (missing closing ] or })
+        try:
+            match = re.search(r'\[.*', cleaned, re.DOTALL)
+            if match:
+                fragment = match.group(0).rstrip().rstrip(',')
+                # Try adding missing brackets
+                for suffix in [']', '}]', '"}]', '"}}]', '"]}}]', '"]},]']:
+                    try:
+                        attempt = fragment + suffix
+                        result = json.loads(attempt)
+                        if isinstance(result, list) and len(result) > 0:
+                            print(f"[DEBUG] JSON repaired with '{suffix}': {len(result)} slides")
+                            return result
+                    except json.JSONDecodeError:
+                        continue
+        except Exception as e:
+            print(f"[DEBUG] Strategy 2 failed: {e}")
+
+        # Strategy 3: Parse individual JSON objects separated by },{ 
+        try:
+            objects = []
+            for obj_match in re.finditer(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', cleaned):
+                try:
+                    obj = json.loads(obj_match.group(0))
+                    if isinstance(obj, dict) and ('title' in obj or 'type' in obj):
+                        objects.append(obj)
+                except json.JSONDecodeError:
+                    continue
+            if objects:
+                print(f"[DEBUG] Extracted {len(objects)} individual slide objects")
+                return objects
+        except Exception as e:
+            print(f"[DEBUG] Strategy 3 failed: {e}")
+
+        print(f"[DEBUG] All JSON strategies failed. Raw response (first 500 chars): {text[:500]}")
         return None
 
     def _parse_text_backup(self, text):
         """Fallback text parser when JSON is malformed."""
+        print(f"[DEBUG] Using text backup parser")
         slides, current = [], {}
         for line in text.split("\n"):
             line = line.strip()
             if not line:
                 continue
-            if "Slide" in line or "Title:" in line:
-                if current:
+            # Detect slide boundaries
+            if (re.match(r'(?:Slide|##)\s*\d', line, re.IGNORECASE) 
+                or 'Title:' in line 
+                or line.startswith('# ')):
+                if current and current.get('content'):
                     slides.append(current)
+                title = re.sub(r'^(?:Slide\s*\d+[:\s]*|##\s*|#\s*)', '', line).strip()
+                title = title.split(':')[-1].strip() if ':' in title else title
                 current = {
-                    "title": line.split(":")[-1].strip(),
+                    "title": title or "Untitled",
                     "content": [],
                     "notes": "AI generated content.",
                 }
-            elif line.startswith(("-", "*", "•")):
-                if "content" in current:
-                    current["content"].append(line[1:].strip())
-        if current:
+            elif line.startswith(("-", "*", "•", "▸")) and current:
+                if "content" not in current:
+                    current["content"] = []
+                current["content"].append(line.lstrip('-*•▸ ').strip())
+            elif current and not current.get('content') and len(line) > 10:
+                # First substantial line after a slide header = treat as a bullet
+                if "content" not in current:
+                    current["content"] = []
+                current["content"].append(line)
+        if current and current.get('content'):
             slides.append(current)
         if not slides:
-            slides = [{"title": "Presentation", "content": ["Content ready."], "notes": "End."}]
+            slides = [{"title": "Presentation", "content": ["Content could not be generated. Please try again."], "notes": "End."}]
+        print(f"[DEBUG] Backup parser found {len(slides)} slides")
         return slides
 
 
