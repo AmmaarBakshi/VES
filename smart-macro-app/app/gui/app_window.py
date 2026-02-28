@@ -35,6 +35,7 @@ from app.engine.batch_engine import run_batch, ACTION_LABELS, scan_folder
 from langchain_ollama import OllamaLLM
 from app.gui.theme import ThemeManager
 from app.gui.components import Card, StatusBadge, ProgressStep, ReasoningTerminal, DownloadButton
+from app.gui.auto_bi_tab import AutoBITab
 
 
 class SignalBridge(QObject):
@@ -104,6 +105,7 @@ class AppWindow(QMainWindow):
             ("Web Scraper", "app/gui/icons/webrecorder.png", self._build_web_scraper_view),
             ("Directories", "app/gui/icons/directories.png", self._build_dir_view),
             ("Batch", "app/gui/icons/Batch.png", self._build_batch_view),
+            ("Auto-BI", "📊", self._build_auto_bi_view),
         ]
         for i, (name, icon, builder) in enumerate(views):
             btn = self._add_nav_button(name, icon, i)
@@ -244,6 +246,12 @@ class AppWindow(QMainWindow):
             "stream_batch": lambda d: self._stream_to_terminal(self.batch_terminal, d),
             "batch_file_status": lambda d: self._batch_update_file(d[0], d[1]),
             "batch_done": lambda d: self.finish_batch(d),
+            # ── Auto-BI signals ──
+            "bi_token":    lambda d: self.auto_bi.on_bi_token(d),
+            "bi_complete": lambda d: self.auto_bi.on_bi_complete(d),
+            "bi_error":     lambda d: self.auto_bi.on_bi_error(d),
+            "bi_ppt_done":  lambda d: self.auto_bi.on_bi_ppt_done(d),
+            "bi_ppt_error": lambda d: self.auto_bi.on_bi_ppt_error(d),
         }
         handler = handlers.get(key)
         if handler:
@@ -816,6 +824,14 @@ class AppWindow(QMainWindow):
 
         layout.addLayout(grid, 1)
         return page
+
+    def _build_auto_bi_view(self):
+        """
+        Build and return the Auto-BI tab widget.
+        Passes the signal bridge so the tab can post UI updates safely.
+        """
+        self.auto_bi = AutoBITab(bridge=self._bridge)
+        return self.auto_bi
 
     # =========================================================
     # LOGIC METHODS (all preserved from original)
