@@ -55,6 +55,47 @@ Provide ONLY the improved text without any explanations or additional commentary
         except Exception as e:
             print(f"Error improving text: {e}")
             return text
+
+    def improve_text_batch(self, texts, style="professional", intensity="moderate"):
+        """Enhance multiple texts in a single LLM call for speed."""
+        if not texts:
+            return texts
+        intensity_instructions = {
+            "light": "Make minimal improvements, fixing only obvious errors.",
+            "moderate": "Improve clarity and grammar while maintaining the original meaning.",
+            "aggressive": "Significantly enhance the text, improving structure, vocabulary, and flow."
+        }
+        numbered = "\n".join(f"[{i+1}] {t}" for i, t in enumerate(texts))
+        prompt = f"""You are a professional editor. {intensity_instructions.get(intensity, intensity_instructions['moderate'])}
+
+Style: {style}
+
+Improve each numbered text below. Return ONLY the improved texts, each prefixed with its number [1], [2], etc.
+
+{numbered}"""
+        try:
+            result = query_ollama(prompt)
+            improved_map = {}
+            current_num = None
+            current_lines = []
+            for line in result.split("\n"):
+                m = re.match(r"\[(\d+)\]\s*(.*)", line)
+                if m:
+                    if current_num is not None:
+                        improved_map[current_num] = "\n".join(current_lines).strip()
+                    current_num = int(m.group(1))
+                    current_lines = [m.group(2)]
+                else:
+                    current_lines.append(line)
+            if current_num is not None:
+                improved_map[current_num] = "\n".join(current_lines).strip()
+            return [
+                improved_map.get(i + 1, texts[i]).strip().strip('"').strip("'")
+                for i in range(len(texts))
+            ]
+        except Exception as e:
+            print(f"Error in batch improve: {e}")
+            return texts
     
     def summarize_content(self, text, max_length=100):
         """
@@ -178,45 +219,42 @@ Provide ONLY the expanded text without any preamble."""
             return text
     
     def check_consistency(self, texts_list, target_style="professional"):
-        """
-        Ensure style consistency across multiple text segments.
-        
-        Args:
-            texts_list: List of text segments to check
-            target_style: Desired consistent style
-        
-        Returns:
-            List of texts with consistent style
-        """
+        """Ensure style consistency across multiple text segments (batched)."""
         if not texts_list:
             return []
-        
-        consistent_texts = []
-        
-        # First, analyze the predominant style
-        sample_text = " ".join(texts_list[:3])  # Use first few texts as reference
-        
-        for text in texts_list:
-            if not text or not text.strip():
-                consistent_texts.append(text)
-                continue
-            
-            prompt = f"""Rewrite the following text to match this style: {target_style}. 
-Ensure it's consistent with professional writing standards.
+        valid = [(i, t) for i, t in enumerate(texts_list) if t and t.strip()]
+        if not valid:
+            return texts_list
+        numbered = "\n".join(f"[{j+1}] {t}" for j, (_, t) in enumerate(valid))
+        prompt = f"""Rewrite each numbered text to match this style: {target_style}.
+Ensure all texts are consistent with professional writing standards.
+Return ONLY the rewritten texts, each prefixed with its number [1], [2], etc.
 
-Text: {text}
-
-Provide ONLY the rewritten text."""
-            
-            try:
-                consistent = query_ollama(prompt)
-                consistent = consistent.strip().strip('"').strip("'")
-                consistent_texts.append(consistent if consistent and not consistent.startswith("[Error") else text)
-            except Exception as e:
-                print(f"Error checking consistency: {e}")
-                consistent_texts.append(text)
-        
-        return consistent_texts
+{numbered}"""
+        try:
+            result = query_ollama(prompt)
+            improved_map = {}
+            current_num = None
+            current_lines = []
+            for line in result.split("\n"):
+                m = re.match(r"\[(\d+)\]\s*(.*)", line)
+                if m:
+                    if current_num is not None:
+                        improved_map[current_num] = "\n".join(current_lines).strip()
+                    current_num = int(m.group(1))
+                    current_lines = [m.group(2)]
+                else:
+                    current_lines.append(line)
+            if current_num is not None:
+                improved_map[current_num] = "\n".join(current_lines).strip()
+            out = list(texts_list)
+            for j, (orig_i, t) in enumerate(valid):
+                val = improved_map.get(j + 1, t).strip().strip('"').strip("'")
+                out[orig_i] = val if val and not val.startswith("[Error") else t
+            return out
+        except Exception as e:
+            print(f"Error checking consistency: {e}")
+            return texts_list
     
     def fix_grammar(self, text):
         """

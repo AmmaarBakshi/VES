@@ -196,12 +196,30 @@ def stream_clarifications(llm, task_type: str, token_callback):
     Stream clarifying questions token-by-token into token_callback(str).
     Uses .stream() for a live typing effect in the chat panel.
     """
+    # Immediately show a relevant starter question (no LLM delay)
+    _STARTER_QUESTIONS = {
+        "ppt": "What topic is your presentation about, and who is the audience?",
+        "pdf": "What subject should the PDF cover, and what tone do you prefer (formal, casual, academic)?",
+        "word_process": "What changes would you like me to make to this document?",
+        "excel_process": "Which columns are most important, and what should the output look like?",
+        "enhance": "What matters most to you — grammar, tone, clarity, or structure?",
+        "smart_fill": "Are there any placeholders that should stay empty or any specific format preferences?",
+        "directory": "Is this for a new project or an existing one? What tech stack?",
+    }
+    starter = _STARTER_QUESTIONS.get(task_type, "What are your preferences for this task?")
+    token_callback(starter)
+
+    # Then stream additional AI-generated questions
     prompt = _CLARIFY_PROMPTS.get(task_type, (
         "Ask the user 2 short clarifying questions. One per line. No intro."
     ))
     try:
+        got_tokens = False
         for chunk in llm.stream(prompt):
             if chunk:
+                if not got_tokens:
+                    token_callback("\n\n")  # Separator before AI questions
+                    got_tokens = True
                 token_callback(chunk)
-    except Exception as e:
-        token_callback(f"\nWhat specific outcome are you looking for?\n")
+    except Exception:
+        pass  # Starter question is enough if LLM fails

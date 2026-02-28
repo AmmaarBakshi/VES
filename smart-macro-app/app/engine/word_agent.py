@@ -76,15 +76,21 @@ def enrich_word_document(file_path, options, style="professional", thought_callb
             stream_cot_plan(_get_plan_llm(), plan_prompt, thought_callback)
             thought_callback("\n\n─── Applying Enhancements ───\n\n")
 
-        # Improve paragraphs
+        # Improve paragraphs (batched for speed)
         if options.get('improve_paragraphs', False):
-            print(f"Improving {len(all_paragraphs)} paragraphs...")
-            for idx, paragraph in enumerate(all_paragraphs):
-                if paragraph.text.strip():
-                    original = paragraph.text
-                    improved = enricher.improve_text(original, style=style, intensity="moderate")
-                    paragraph.text = improved
-                    print(f" - Processed paragraph {idx + 1}/{len(all_paragraphs)}")
+            print(f"Improving {len(all_paragraphs)} paragraphs (batched)...")
+            BATCH_SIZE = 5
+            for batch_start in range(0, len(all_paragraphs), BATCH_SIZE):
+                batch = all_paragraphs[batch_start:batch_start + BATCH_SIZE]
+                batch_texts = [p.text for p in batch if p.text.strip()]
+                if batch_texts:
+                    improved = enricher.improve_text_batch(batch_texts, style=style, intensity="moderate")
+                    text_idx = 0
+                    for p in batch:
+                        if p.text.strip() and text_idx < len(improved):
+                            p.text = improved[text_idx]
+                            text_idx += 1
+                    print(f" - Batch {batch_start//BATCH_SIZE + 1}: processed {len(batch_texts)} paragraphs")
         
         # Fix consistency
         if options.get('fix_consistency', False):

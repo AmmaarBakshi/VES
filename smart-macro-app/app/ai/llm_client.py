@@ -23,7 +23,7 @@ def query_ollama(prompt):
         "messages": [
             {
                 "role": "system", 
-                "content": "You are a helpful automation assistant. Output only the requested result."
+                "content": "You are a helpful automation assistant. Output only the requested result.(fastest time possible [note the content should be accurate but the output should come in fastest timre possible ])"
             },
             {
                 "role": "user", 

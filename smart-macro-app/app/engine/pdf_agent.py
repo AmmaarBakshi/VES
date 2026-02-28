@@ -1,5 +1,6 @@
 import threading
 import os
+import re
 from langchain_community.llms import Ollama
 from app.engine.cot_engine import stream_cot_plan, make_pdf_plan_prompt
 
@@ -44,8 +45,11 @@ class PDFAgent:
                 # --- Step 2: Generating PDF File ---
                 update_callback("step_2", "running")
                 
-                filename = f"{topic.replace(' ', '_')}_generated.pdf"
-                output_path = os.path.join(os.getcwd(), filename)
+                filename_base = topic.split('\n')[0].strip()[:60]  # Use only original topic, not appended preferences
+                filename_base = re.sub(r'[^\w\s-]', '', filename_base).strip().replace(' ', '_')
+                filename = f"{filename_base}_generated.pdf"
+                output_path = os.path.join(os.getcwd(), "user_data", filename)
+                os.makedirs(os.path.dirname(output_path), exist_ok=True)
                 
                 result = create_filled_pdf(generated_content, output_path)
                 

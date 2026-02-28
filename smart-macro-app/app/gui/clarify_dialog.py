@@ -1,231 +1,243 @@
 """
-clarify_dialog.py  —  Floating "Ask AI Before You Run" popup dialog.
-
-A CTkToplevel window that appears centered over the main app, streams
-clarifying questions from the AI, and calls on_proceed(user_answer)
-when the user submits their reply.
+Clarification Dialog — PyQt6
+Modal dialog that shows a task-specific starter question and collects user answers.
 """
 
-import customtkinter as ctk
-import threading
-
-_BG      = "#080810"
-_AI_CLR  = "#00FF88"
-_USR_CLR = "#E2E8F0"
-_ACCENT  = "#6366F1"
+from PyQt6.QtWidgets import (
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel,
+    QPushButton, QLineEdit, QScrollArea, QWidget, QFrame
+)
+from PyQt6.QtCore import Qt, QTimer
 
 
-class ClarifyDialog(ctk.CTkToplevel):
+class ClarifyDialog(QDialog):
     """
-    Floating dialog that:
-      1. Streams AI clarifying questions token-by-token (typing effect)
-      2. Lets the user type an answer
-      3. Calls on_proceed(answer) when user clicks "Proceed ▶"
+    Floating modal dialog for AI clarification before executing tasks.
+
+    Shows an instant starter question relevant to the task,
+    then optionally streams additional AI questions.
+    Calls on_proceed(answer) or on_cancel().
     """
 
-    def __init__(self, master, task_label: str, on_proceed, on_cancel=None, **kwargs):
-        super().__init__(master, **kwargs)
+    # Starter questions shown immediately — no LLM needed
+    _STARTER_QUESTIONS = {
+        "ppt": "What topic is your presentation about, and who is the audience?",
+        "pdf": "What subject should the PDF cover, and what tone do you prefer?",
+        "word_process": "What changes would you like me to make to this document?",
+        "excel_process": "Which columns are most important, and what should the output look like?",
+        "enhance": "What matters most — grammar, tone, clarity, or structure?",
+        "smart_fill": "Any placeholders to leave empty or specific format preferences?",
+        "directory": "Is this for a new project or an existing one? What tech stack?",
+    }
 
-        self._on_proceed = on_proceed
-        self._on_cancel  = on_cancel
-        self._answer = ""
+    def __init__(self, parent=None, task_label="", task_type="", on_proceed=None, on_cancel=None):
+        super().__init__(parent)
+        self.on_proceed = on_proceed
+        self.on_cancel_cb = on_cancel
 
-        # --- Window setup ---
-        self.title("💬 AI Clarification")
-        self.geometry("560x420")
-        self.configure(fg_color=_BG)
-        self.resizable(False, False)
-        self.grab_set()          # modal — blocks the main window
-        self.lift()
-        self.after(100, self._center)
-        self.protocol("WM_DELETE_WINDOW", self._skip)   # X = skip Q&A
+        self.setWindowTitle(f"AI Clarification — {task_label}")
+        self.setFixedSize(560, 480)
+        self.setModal(True)
 
-        # --- Build UI ---
-        self._build(task_label)
+        # Force explicit colors so text is always visible regardless of theme
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #FFFFFF;
+                color: #1a1a2e;
+            }
+            QScrollArea {
+                background-color: #FFFFFF;
+                border: none;
+            }
+            QScrollArea > QWidget > QWidget {
+                background-color: #FFFFFF;
+            }
+            QLabel {
+                color: #1a1a2e;
+                background: transparent;
+            }
+            QLineEdit {
+                background-color: #F3F4F6;
+                color: #1a1a2e;
+                border: 1px solid #D1D5DB;
+                border-radius: 8px;
+                padding: 10px 14px;
+                font-size: 13px;
+            }
+            QLineEdit:focus {
+                border-color: #4F46E5;
+            }
+            QPushButton#dialogPrimary {
+                background-color: #4F46E5;
+                color: #1a1a2e;
+                border: none;
+                border-radius: 8px;
+                padding: 8px 20px;
+                font-size: 13px;
+                font-weight: 600;
+            }
+            QPushButton#dialogPrimary:hover {
+                background-color: #4338CA;
+            }
+            QPushButton#dialogGhost {
+                background: transparent;
+                color: #6b7280;
+                border: none;
+                font-size: 12px;
+            }
+            QPushButton#dialogGhost:hover {
+                color: #1a1a2e;
+            }
+        """)
 
-    # ── UI ────────────────────────────────────────────────────────────────
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
-    def _build(self, task_label: str):
         # Header
-        hdr = ctk.CTkFrame(self, fg_color="transparent")
-        hdr.pack(fill="x", padx=20, pady=(18, 4))
-
-        ctk.CTkLabel(
-            hdr, text="🤖  Quick Questions Before I Start",
-            font=("Consolas", 13, "bold"), text_color=_AI_CLR, anchor="w"
-        ).pack(side="left")
-
-        ctk.CTkLabel(
-            hdr, text=task_label,
-            font=("Segoe UI", 11), text_color="#555577", anchor="e"
-        ).pack(side="right")
-
-        ctk.CTkFrame(self, height=1, fg_color="#1A1A2E").pack(fill="x", padx=20)
+        header = QWidget()
+        header.setStyleSheet("background-color: #F9FAFB; border-bottom: 1px solid #E5E7EB;")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(20, 16, 20, 12)
+        title = QLabel(task_label)
+        title.setStyleSheet("font-size: 16px; font-weight: 700; color: #1a1a2e;")
+        header_layout.addWidget(title)
+        header_layout.addStretch()
+        step_lbl = QLabel("Preferences")
+        step_lbl.setStyleSheet("font-size: 11px; color: #9ca3af; font-weight: 500;")
+        header_layout.addWidget(step_lbl)
+        layout.addWidget(header)
 
         # Chat scroll area
-        self._scroll = ctk.CTkScrollableFrame(
-            self, fg_color="transparent", height=220,
-            scrollbar_button_color="#1A1A2E",
-            scrollbar_button_hover_color="#2A2A4E",
-        )
-        self._scroll.pack(fill="x", padx=16, pady=(10, 6))
-        self._scroll.grid_columnconfigure(0, weight=1)
-        self._row = 0
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._msg_container = QWidget()
+        self._msg_container.setStyleSheet("background-color: #FFFFFF;")
+        self._msg_layout = QVBoxLayout(self._msg_container)
+        self._msg_layout.setContentsMargins(20, 16, 20, 16)
+        self._msg_layout.setSpacing(10)
+        self._msg_layout.addStretch()
 
-        # Current AI bubble text accumulator
-        self._ai_lbl = None
-        self._ai_text = ""
-
-        # ── Show an immediate 'Thinking...' placeholder so the dialog is never blank ──
-        self._thinking_lbl = ctk.CTkLabel(
-            self._scroll,
-            text="🤖  Thinking…",
-            font=("Consolas", 11), text_color="#445566",
-            anchor="w", justify="left",
-        )
-        self._thinking_lbl.grid(row=self._row, column=0, sticky="ew",
-                                padx=(8, 48), pady=(8, 2))
-        self._row += 1
-        # Pulse the dots to signal activity
-        self._pulse_count = 0
-        self._pulse_job = self.after(400, self._pulse_thinking)
-
-        ctk.CTkFrame(self, height=1, fg_color="#1A1A2E").pack(fill="x", padx=20)
+        self._scroll.setWidget(self._msg_container)
+        layout.addWidget(self._scroll, 1)
 
         # Input row
-        inp = ctk.CTkFrame(self, fg_color="transparent")
-        inp.pack(fill="x", padx=16, pady=10)
-        inp.grid_columnconfigure(0, weight=1)
-
-        self._entry = ctk.CTkEntry(
-            inp,
-            placeholder_text="Type your answer here and press Enter…",
-            fg_color="#0D0D1A", border_color="#2A2A4E", border_width=1,
-            text_color=_USR_CLR, font=("Segoe UI", 12),
-            height=40, corner_radius=8, state="disabled"
-        )
-        self._entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
-        self._entry.bind("<Return>", lambda e: self._on_send())
-
-        self._send_btn = ctk.CTkButton(
-            inp, text="Proceed ▶",
-            fg_color=_ACCENT, hover_color="#4F52D0",
-            text_color="white", font=("Segoe UI", 12, "bold"),
-            height=40, width=100, corner_radius=8,
-            state="disabled", command=self._on_send
-        )
-        self._send_btn.grid(row=0, column=1)
+        input_bar = QWidget()
+        input_bar.setStyleSheet("background-color: #F9FAFB; border-top: 1px solid #E5E7EB;")
+        input_layout = QHBoxLayout(input_bar)
+        input_layout.setContentsMargins(20, 12, 20, 8)
+        self._input = QLineEdit()
+        self._input.setPlaceholderText("Type your answer or preferences...")
+        self._input.returnPressed.connect(self._submit)
+        input_layout.addWidget(self._input, 1)
+        submit_btn = QPushButton("Send")
+        submit_btn.setObjectName("dialogPrimary")
+        submit_btn.setFixedHeight(36)
+        submit_btn.clicked.connect(self._submit)
+        input_layout.addWidget(submit_btn)
+        layout.addWidget(input_bar)
 
         # Skip link
-        ctk.CTkButton(
-            self, text="Skip Q&A — run with defaults",
-            fg_color="transparent", hover_color="#111122",
-            text_color="#444466", font=("Segoe UI", 10),
-            height=22, command=self._skip
-        ).pack(pady=(0, 12))
+        skip_btn = QPushButton("Skip — run with defaults")
+        skip_btn.setObjectName("dialogGhost")
+        skip_btn.setFixedHeight(28)
+        skip_btn.clicked.connect(self._skip)
+        skip_wrap = QWidget()
+        skip_wrap.setStyleSheet("background-color: #FFFFFF;")
+        skip_layout = QHBoxLayout(skip_wrap)
+        skip_layout.setContentsMargins(0, 0, 0, 12)
+        skip_layout.addStretch()
+        skip_layout.addWidget(skip_btn)
+        skip_layout.addStretch()
+        layout.addWidget(skip_wrap)
 
-    # ── Public Streaming API ───────────────────────────────────────────────
+        self._current_ai_label = None
+        self._token_buffer = []
 
-    def _pulse_thinking(self):
-        """Animate the 'Thinking...' dots while waiting for Ollama."""
-        if not self._thinking_lbl or not self.winfo_exists():
-            return
-        dots = ["•", "••", "•••"]
-        self._pulse_count = (self._pulse_count + 1) % 3
-        try:
-            self._thinking_lbl.configure(
-                text=f"🤖  Thinking {dots[self._pulse_count]}"
+        # Show the starter question with a typing animation
+        starter = self._STARTER_QUESTIONS.get(task_type, "What are your preferences for this task?")
+        self._typing_label = self._add_bubble("", is_ai=True)
+        self._typing_text = starter
+        self._typing_index = 0
+        self._typing_timer = QTimer(self)
+        self._typing_timer.timeout.connect(self._type_next_char)
+        self._typing_timer.start(30)  # 30ms per character
+
+        self.show()
+
+    def _type_next_char(self):
+        if self._typing_index < len(self._typing_text):
+            self._typing_label.setText(self._typing_text[:self._typing_index + 1])
+            self._typing_index += 1
+        else:
+            self._typing_timer.stop()
+
+    def _add_bubble(self, text, is_ai=False):
+        bubble = QLabel(text)
+        bubble.setWordWrap(True)
+        if is_ai:
+            bubble.setStyleSheet(
+                "background-color: #EEF2FF; color: #1e1b4b; "
+                "border-radius: 10px; padding: 12px 16px; font-size: 13px; "
+                "border: 1px solid #C7D2FE;"
             )
-        except Exception:
+        else:
+            bubble.setStyleSheet(
+                "background-color: #F3F4F6; color: #1a1a2e; "
+                "border-radius: 10px; padding: 12px 16px; font-size: 13px; "
+                "border: 1px solid #E5E7EB;"
+            )
+        count = self._msg_layout.count()
+        self._msg_layout.insertWidget(count - 1, bubble)
+        QTimer.singleShot(50, lambda: self._scroll.verticalScrollBar().setValue(
+            self._scroll.verticalScrollBar().maximum()))
+        return bubble
+
+    # Thread-safe wrappers for additional AI streaming (optional)
+    def start_ai_message_safe(self):
+        QTimer.singleShot(0, self._do_start_ai)
+
+    def append_ai_token_safe(self, token):
+        QTimer.singleShot(0, lambda t=token: self._do_append_token(t))
+
+    def end_ai_message_safe(self):
+        QTimer.singleShot(0, self._do_end_ai)
+
+    def _do_start_ai(self):
+        self._current_ai_label = self._add_bubble("", is_ai=True)
+        if self._token_buffer:
+            self._current_ai_label.setText("".join(self._token_buffer))
+            self._token_buffer.clear()
+
+    def _do_append_token(self, token):
+        if self._current_ai_label:
+            current = self._current_ai_label.text()
+            self._current_ai_label.setText(current + token)
+        else:
+            self._token_buffer.append(token)
+
+    def _do_end_ai(self):
+        self._current_ai_label = None
+
+    def _submit(self):
+        answer = self._input.text().strip()
+        if not answer:
             return
-        self._pulse_job = self.after(500, self._pulse_thinking)
-
-    def start_ai_message(self):
-        """Begin a new AI bubble (call before first token)."""
-        # Remove the thinking placeholder when real content arrives
-        if self._thinking_lbl:
-            try:
-                self._thinking_lbl.destroy()
-            except Exception:
-                pass
-            self._thinking_lbl = None
-        if self._pulse_job:
-            try:
-                self.after_cancel(self._pulse_job)
-            except Exception:
-                pass
-            self._pulse_job = None
-
-        self._ai_text = ""
-        self._ai_lbl = ctk.CTkLabel(
-            self._scroll,
-            text="🤖  ",
-            font=("Consolas", 11), text_color=_AI_CLR,
-            anchor="w", justify="left", wraplength=460,
-        )
-        self._ai_lbl.grid(row=self._row, column=0, sticky="ew",
-                          padx=(8, 48), pady=(8, 2))
-        self._row += 1
-        self._scroll._parent_canvas.yview_moveto(1.0)
-
-    def append_ai_token(self, token: str):
-        """Append a streaming token to the current AI bubble."""
-        self._ai_text += token
-        if self._ai_lbl:
-            self._ai_lbl.configure(text="🤖  " + self._ai_text)
-            self._scroll._parent_canvas.yview_moveto(1.0)
-
-    def end_ai_message(self):
-        """Finalise the AI bubble and unlock the input field."""
-        self._ai_lbl = None
-        self._entry.configure(state="normal")
-        self._send_btn.configure(state="normal")
-        self._entry.focus()
-
-    # ── Helpers ───────────────────────────────────────────────────────────
-
-    def _center(self):
-        """Centre the dialog over the master window."""
-        try:
-            self.update_idletasks()
-            mw = self.master.winfo_width()
-            mh = self.master.winfo_height()
-            mx = self.master.winfo_rootx()
-            my = self.master.winfo_rooty()
-            dw, dh = 560, 420
-            x = mx + (mw - dw) // 2
-            y = my + (mh - dh) // 2
-            self.geometry(f"{dw}x{dh}+{x}+{y}")
-        except Exception:
-            pass
-
-    def _on_send(self):
-        answer = self._entry.get().strip()
-        self._entry.configure(state="disabled")
-        self._send_btn.configure(state="disabled", text="Running…")
-        self._answer = answer
-        self.after(400, self._finish)
+        self._submitted = True
+        self._add_bubble(answer, is_ai=False)
+        self._input.clear()
+        if self.on_proceed:
+            self.on_proceed(answer)
+        self.close()
 
     def _skip(self):
-        """User closed or skipped — proceed with empty answer."""
-        self._answer = ""
-        self._finish()
+        self._submitted = True
+        if self.on_proceed:
+            self.on_proceed("")
+        self.close()
 
-    def _finish(self):
-        answer = self._answer
-        cb = self._on_proceed
-        cancel_cb = self._on_cancel
-        # Stop the pulse animation
-        if hasattr(self, '_pulse_job') and self._pulse_job:
-            try:
-                self.after_cancel(self._pulse_job)
-            except Exception:
-                pass
-        self.grab_release()
-        self.destroy()
-        # Fire the callback AFTER the dialog is gone
-        if answer == "" and cancel_cb:
-            # User skipped/closed without answering — fire cancel path too
-            threading.Thread(target=lambda: cb(answer), daemon=True).start()
-        else:
-            threading.Thread(target=lambda: cb(answer), daemon=True).start()
+    def closeEvent(self, event):
+        if not getattr(self, '_submitted', False) and self.on_cancel_cb:
+            self.on_cancel_cb()
+        super().closeEvent(event)
