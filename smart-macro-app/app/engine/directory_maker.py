@@ -3,11 +3,14 @@ import threading
 import re
 import time
 from langchain_ollama import OllamaLLM
+from app.utils.config_loader import load_ai_config
 from app.engine.cot_engine import stream_cot_plan, make_dir_plan_prompt
 
 class SmartScaffolder:
     def __init__(self):
-        self.llm = OllamaLLM(model="llama3", temperature=0.4)
+        config = load_ai_config()
+        model_name = config.get("active_model", "llama3.2")
+        self.llm = OllamaLLM(model=model_name, temperature=0.4)
 
     def identify_context(self, tree_text):
         try:

@@ -1,0 +1,4 @@
+{
+    "active_model": "gemini-3-flash-preview:cloud",
+    "ollama_base_url": "http://localhost:11434"
+}

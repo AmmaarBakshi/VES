@@ -15,7 +15,7 @@ from PyQt6.QtCore import Qt, QTimer, QMetaObject, Q_ARG, pyqtSignal, pyqtSlot, Q
 from PyQt6.QtGui import QFont, QTextCursor, QIcon
 
 # --- PROJECT IMPORTS ---
-from app.utils.config_loader import save_macro, load_macros
+from app.utils.config_loader import save_macro, load_macros, load_ai_config, save_ai_config
 from app.utils.ollama_manager import get_ollama_manager
 from app.engine.directory_maker import create_directory_from_text, parse_tree_to_list
 from app.engine.word_agent import process_word_document
@@ -106,6 +106,7 @@ class AppWindow(QMainWindow):
             ("Directories", "app/gui/icons/directories.png", self._build_dir_view),
             ("Batch", "app/gui/icons/Batch.png", self._build_batch_view),
             ("Auto-BI", "📊", self._build_auto_bi_view),
+            ("Settings", "⚙️", self._build_settings_view),
         ]
         for i, (name, icon, builder) in enumerate(views):
             btn = self._add_nav_button(name, icon, i)
@@ -314,8 +315,10 @@ class AppWindow(QMainWindow):
             btn.setEnabled(True)
 
     def _run_clarification_phase(self, task_type, task_label, on_proceed):
-        if not hasattr(self, '_clarify_llm'):
-            self._clarify_llm = OllamaLLM(model="llama3", temperature=0.4)
+        ai_config = load_ai_config()
+        model_name = ai_config.get("active_model", "llama3.2")
+        self._clarify_llm = OllamaLLM(model=model_name, temperature=0.4)
+        
         dlg = ClarifyDialog(self, task_label=task_label, task_type=task_type, on_proceed=on_proceed)
         def _ask():
             self._emit("_clarify_start", None)
@@ -328,8 +331,10 @@ class AppWindow(QMainWindow):
         threading.Thread(target=_ask, daemon=True).start()
 
     def _run_clarification_phase_with_cancel(self, task_type, task_label, on_proceed, on_cancel=None):
-        if not hasattr(self, '_clarify_llm'):
-            self._clarify_llm = OllamaLLM(model="llama3", temperature=0.4)
+        ai_config = load_ai_config()
+        model_name = ai_config.get("active_model", "llama3.2")
+        self._clarify_llm = OllamaLLM(model=model_name, temperature=0.4)
+        
         dlg = ClarifyDialog(self, task_label=task_label, task_type=task_type, on_proceed=on_proceed, on_cancel=on_cancel)
         def _ask():
             dlg.start_ai_message_safe()
@@ -742,6 +747,134 @@ class AppWindow(QMainWindow):
         grid.setColumnStretch(1, 2)
         layout.addLayout(grid, 1)
         return page
+
+    # === VIEW 11: SETTINGS ===
+    def _build_settings_view(self):
+        page, layout = self._make_page()
+        self._make_header(layout, "General Settings", "Configure global application settings and AI models")
+
+        # Create a card for General AI config
+        ai_card = Card("AI Engine Configuration")
+        cl = ai_card.content_layout()
+
+        # Instruction blurb
+        desc = QLabel("These settings apply globally to all AI features in the Smart Macro Station. Depending on your choice, the application will attempt to talk to your local fast offline models, or external cloud engines.")
+        desc.setWordWrap(True)
+        desc.setStyleSheet("color: #64748B; margin-bottom: 12px;")
+        cl.addWidget(desc)
+
+        # Load current config
+        self.ai_config = load_ai_config()
+
+        # Model Selection Label
+        lbl_model = QLabel("Active AI Model")
+        lbl_model.setObjectName("fieldLabel")
+        cl.addWidget(lbl_model)
+
+        # Combo box and text fields config row
+        model_row = QHBoxLayout()
+        self.settings_model_combo = QComboBox()
+        self.settings_model_combo.addItems([
+            "llama3.2",
+            "qwen2.5:3b",
+            "mistral",
+            "gemini-3-flash-preview:cloud",
+            "kimi-k2:1t-cloud",
+            "Custom..."
+        ])
+        
+        # Select current if it's in the list, else choose Custom
+        current_model = self.ai_config.get("active_model", "llama3.2")
+        index = self.settings_model_combo.findText(current_model)
+        if index >= 0:
+            self.settings_model_combo.setCurrentIndex(index)
+        else:
+            self.settings_model_combo.setCurrentIndex(self.settings_model_combo.count() - 1) # Custom
+            
+        model_row.addWidget(self.settings_model_combo, 1)
+
+        self.settings_model_custom = QLineEdit()
+        self.settings_model_custom.setPlaceholderText("Enter custom model tag...")
+        if index < 0:
+            self.settings_model_custom.setText(current_model)
+            self.settings_model_custom.setVisible(True)
+        else:
+            self.settings_model_custom.setVisible(False)
+            
+        model_row.addWidget(self.settings_model_custom, 1)
+
+        # Handle toggle logic for custom input
+        def handle_combo_change(text):
+            self.settings_model_custom.setVisible(text == "Custom...")
+        self.settings_model_combo.currentTextChanged.connect(handle_combo_change)
+
+        cl.addLayout(model_row)
+
+        cl.addSpacing(16)
+
+        # Base URL configs
+        lbl_url = QLabel("Ollama Base URL")
+        lbl_url.setObjectName("fieldLabel")
+        cl.addWidget(lbl_url)
+        
+        self.settings_base_url = QLineEdit()
+        self.settings_base_url.setText(self.ai_config.get("ollama_base_url", "http://localhost:11434"))
+        self.settings_base_url.setPlaceholderText("http://localhost:11434")
+        cl.addWidget(self.settings_base_url)
+
+        cl.addSpacing(20)
+
+        # Save Button
+        save_btn_row = QHBoxLayout()
+        save_btn_row.addStretch()
+        
+        self.settings_save_btn = QPushButton("💾 Save Settings")
+        self.settings_save_btn.setObjectName("primary")
+        self.settings_save_btn.setFixedHeight(44)
+        self.settings_save_btn.clicked.connect(self._save_settings)
+        save_btn_row.addWidget(self.settings_save_btn)
+        
+        cl.addLayout(save_btn_row)
+
+        layout.addWidget(ai_card, alignment=Qt.AlignmentFlag.AlignTop)
+        
+        # Add a stretch so layout pushes up
+        layout.addStretch()
+
+        return page
+
+    def _save_settings(self):
+        is_custom = self.settings_model_combo.currentText() == "Custom..."
+        model_name = self.settings_model_custom.text() if is_custom else self.settings_model_combo.currentText()
+        base_url = self.settings_base_url.text().strip()
+
+        if not base_url:
+            base_url = "http://localhost:11434"
+
+        # Update the local RAM copy and save to disk
+        self.ai_config["active_model"] = model_name
+        self.ai_config["ollama_base_url"] = base_url
+        
+        save_ai_config(self.ai_config)
+
+        # Re-initialize any instances if necessary
+        # For example, we might need to tell engines to reset their LLM wrappers
+        
+        print(f"✅ Settings saved! Using model: {model_name} | URL: {base_url}")
+        
+        # Change button briefly to indicate success
+        self.settings_save_btn.setText("✅ Saved!")
+        self.settings_save_btn.setObjectName("success")
+        self.settings_save_btn.style().unpolish(self.settings_save_btn)
+        self.settings_save_btn.style().polish(self.settings_save_btn)
+        
+        QTimer.singleShot(2000, self._reset_settings_btn)
+
+    def _reset_settings_btn(self):
+        self.settings_save_btn.setText("💾 Save Settings")
+        self.settings_save_btn.setObjectName("primary")
+        self.settings_save_btn.style().unpolish(self.settings_save_btn)
+        self.settings_save_btn.style().polish(self.settings_save_btn)
 
     # === VIEW 9: BATCH OPERATIONS ===
     def _build_batch_view(self):

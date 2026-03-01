@@ -1,13 +1,16 @@
 from app.ai.llm_client import query_ollama
 from langchain_ollama import OllamaLLM
 from app.engine.cot_engine import stream_cot_plan, make_smart_fill_plan_prompt
+from app.utils.config_loader import load_ai_config
 
 # Shared LLM for CoT planning
 _plan_llm = None
 def _get_plan_llm():
     global _plan_llm
     if _plan_llm is None:
-        _plan_llm = OllamaLLM(model="llama3", temperature=0.5)
+        config = load_ai_config()
+        model_name = config.get("active_model", "llama3.2")
+        _plan_llm = OllamaLLM(model=model_name, temperature=0.5)
     return _plan_llm
 
 

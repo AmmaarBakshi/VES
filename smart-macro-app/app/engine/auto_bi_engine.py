@@ -23,6 +23,8 @@ try:
 except ImportError:
     OLLAMA_AVAILABLE = False
 
+from app.utils.config_loader import load_ai_config
+
 
 # ─── Built-in demo dataset ────────────────────────────────────────────────────
 FALLBACK_DATA = {
@@ -118,7 +120,15 @@ class AutoBIEngine:
         on_error(str)     — traceback string
     """
 
-    OLLAMA_MODEL = "llama3"
+    def __init__(self, df: pd.DataFrame, on_token, on_complete, on_error):
+        self.df = df.copy()
+        self.on_token = on_token
+        self.on_complete = on_complete
+        self.on_error = on_error
+        
+        config = load_ai_config()
+        self.OLLAMA_MODEL = config.get("active_model", "llama3.2")
+        self.OLLAMA_BASE_URL = config.get("ollama_base_url", "http://localhost:11434").rstrip("/")
 
     def __init__(self, df: pd.DataFrame, on_token, on_complete, on_error):
         self.df = df.copy()
@@ -219,13 +229,22 @@ class AutoBIEngine:
                 self._think("Querying LLM — awaiting dual-chart JSON schema…", 0.5)
                 self._think("LLM is reasoning over trends, outliers, and correlations…", 1.3)
                 try:
-                    resp = ollama.chat(
-                        model=self.OLLAMA_MODEL,
-                        messages=[
+                    import requests
+                    
+                    api_url = f"{self.OLLAMA_BASE_URL}/api/chat"
+                    payload = {
+                        "model": self.OLLAMA_MODEL,
+                        "messages": [
                             {"role": "system", "content": SYSTEM_PROMPT},
                             {"role": "user",   "content": f"Data summary:\n\n{summary}"},
                         ],
-                    )
+                        "stream": False
+                    }
+                    
+                    response = requests.post(api_url, json=payload, timeout=60)
+                    response.raise_for_status()
+                    resp = response.json()
+                    
                     raw = resp["message"]["content"]
                     self._think("JSON schema received — validating…", 0.45)
                     result = self._parse_json(raw)

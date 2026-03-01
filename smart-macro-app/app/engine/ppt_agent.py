@@ -12,6 +12,7 @@ from pptx.enum.text import MSO_AUTO_SIZE, PP_ALIGN
 from pptx.dml.color import RGBColor
 from langchain_ollama import OllamaLLM
 from app.engine.cot_engine import stream_cot_plan, make_ppt_plan_prompt
+from app.utils.config_loader import load_ai_config
 
 # ── Slide dimensions (standard Widescreen 13.33" x 7.5") ─────────────────────
 SLIDE_W = Inches(13.33)
@@ -429,7 +430,9 @@ def _build_content_slide(prs, slide_info, slide_index):
 
 class PPTGenerator:
     def __init__(self):
-        self.llm = OllamaLLM(model="llama3", temperature=0.7)
+        config = load_ai_config()
+        model_name = config.get("active_model", "llama3.2")
+        self.llm = OllamaLLM(model=model_name, temperature=0.7)
 
     def generate_ppt(self, topic, update_callback, thought_callback=None):
         def run():

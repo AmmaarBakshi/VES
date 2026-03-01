@@ -41,6 +41,7 @@ from PyQt6.QtWidgets import (
 from app.gui.components import ReasoningTerminal
 from app.gui.theme import ThemeManager
 from app.engine.auto_bi_engine import get_fallback_df
+from app.utils.config_loader import load_ai_config
 
 try:
     import ollama
@@ -171,16 +172,28 @@ Required JSON schema (reproduce this structure exactly):
             self._think("Ollama not installed - using built-in analysis...", 0.5)
             result = self._fallback(num_cols)
         else:
-            self._think("Connecting to local Ollama (llama3)...", 0.4)
+            self._think("Connecting to local Ollama...", 0.4)
             self._think("Querying AI for dual-chart + executive brief...", 0.8)
             try:
-                resp = ollama.chat(
-                    model="llama3",
-                    messages=[
+                config = load_ai_config()
+                model_name = config.get("active_model", "llama3.2")
+                base_url = config.get("ollama_base_url", "http://localhost:11434").rstrip("/")
+                
+                import requests
+                api_url = f"{base_url}/api/chat"
+                payload = {
+                    "model": model_name,
+                    "messages": [
                         {"role": "system", "content": self._SYSTEM},
                         {"role": "user", "content": f"Data:\n{summary}"},
                     ],
-                )
+                    "stream": False
+                }
+                
+                response = requests.post(api_url, json=payload, timeout=60)
+                response.raise_for_status()
+                resp = response.json()
+                
                 raw = resp["message"]["content"]
                 self._think("Parsing AI response...", 0.3)
                 result = self._parse(raw)

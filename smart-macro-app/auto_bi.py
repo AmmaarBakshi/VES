@@ -46,6 +46,7 @@ try:
     OLLAMA_AVAILABLE = True
 except ImportError:
     OLLAMA_AVAILABLE = False
+from app.utils.config_loader import load_ai_config
 
 # =============================================================================
 # GLOBAL: CYBER DARK QSS THEME
@@ -342,14 +343,26 @@ class AnalysisWorker(QThread):
 
                 system_prompt, user_message = self._build_prompt(summary)
                 try:
-                    response = ollama.chat(
-                        model="llama3",
-                        messages=[
+                    config = load_ai_config()
+                    model_name = config.get("active_model", "llama3.2")
+                    base_url = config.get("ollama_base_url", "http://localhost:11434").rstrip("/")
+
+                    import requests
+                    api_url = f"{base_url}/api/chat"
+                    payload = {
+                        "model": model_name,
+                        "messages": [
                             {"role": "system", "content": system_prompt},
                             {"role": "user", "content": user_message},
                         ],
-                    )
-                    raw_text = response["message"]["content"]
+                        "stream": False
+                    }
+                    
+                    response = requests.post(api_url, json=payload, timeout=60)
+                    response.raise_for_status()
+                    resp = response.json()
+                    
+                    raw_text = resp["message"]["content"]
                     result = self._parse_json_from_response(raw_text)
                 except Exception as ollama_err:
                     self._think(f"⚠️ Ollama call failed: {ollama_err}", 0.3)

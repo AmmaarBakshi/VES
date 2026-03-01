@@ -3,6 +3,7 @@ import os
 import re
 from langchain_community.llms import Ollama
 from app.engine.cot_engine import stream_cot_plan, make_pdf_plan_prompt
+from app.utils.config_loader import load_ai_config
 
 # IMPORTS: We import the function from the neighboring file 'pdf_maker.py'
 try:
@@ -13,7 +14,9 @@ except ImportError:
 class PDFAgent:
     def __init__(self):
         # Ensure Ollama is running in your terminal!
-        self.llm = Ollama(model="llama3")
+        config = load_ai_config()
+        model_name = config.get("active_model", "llama3.2")
+        self.llm = Ollama(model=model_name)
 
     def generate_smart_pdf(self, topic, update_callback, thought_callback=None):
         """
