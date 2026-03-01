@@ -28,6 +28,7 @@ import matplotlib
 matplotlib.use("QtAgg")
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
 
 from PyQt6.QtCore import Qt, QThread, QObject, QTimer, pyqtSignal, QTime
 from PyQt6.QtWidgets import (
@@ -38,6 +39,7 @@ from PyQt6.QtWidgets import (
 )
 
 from app.gui.components import ReasoningTerminal
+from app.gui.theme import ThemeManager
 from app.engine.auto_bi_engine import get_fallback_df
 
 try:
@@ -72,8 +74,8 @@ class AnalysisWorker(QObject):
     complete = pyqtSignal(dict)      # final result dict
     error    = pyqtSignal(str)       # traceback string
 
-  # LLM prompt
-_SYSTEM = """You are a Senior Executive Data Analyst with 20 years of experience presenting \
+    # LLM prompt
+    _SYSTEM = """You are a Senior Executive Data Analyst with 20 years of experience presenting \
 to Fortune 500 boards. Your analysis is precise, data-driven, and immediately actionable.
 
 Analyse the data summary provided and return ONLY a single valid JSON object.
@@ -117,7 +119,6 @@ Required JSON schema (reproduce this structure exactly):
   }
 }"""
 
-    def __init__(self, df: pd.DataFrame):
     def __init__(self, df):
         super().__init__()
         self.df = df.copy()
@@ -138,23 +139,29 @@ Required JSON schema (reproduce this structure exactly):
         self._think(f"Dataset: {self.df.shape[0]} rows x {self.df.shape[1]} columns", 0.3)
         self._think("Profiling numeric and categorical columns...", 0.4)
 
-        # Build summary
+        # Build summary (capped for LLM context window)
         num_cols = self.df.select_dtypes(include="number").columns.tolist()
+        # Limit to top 8 numeric columns for correlation/stats to avoid overwhelming LLM
+        num_cols_capped = num_cols[:8]
         summary_parts = [
             f"Shape: {self.df.shape}",
             f"Columns: {list(self.df.columns)}",
             f"Types: {dict(self.df.dtypes.astype(str))}",
         ]
-        if num_cols:
-            summary_parts.append(f"Stats:\n{self.df[num_cols].describe().round(2).to_string()}")
-        if len(num_cols) >= 2:
+        if num_cols_capped:
+            summary_parts.append(f"Stats:\n{self.df[num_cols_capped].describe().round(2).to_string()}")
+        if len(num_cols_capped) >= 2:
             self._think("Computing correlation matrix...", 0.4)
             summary_parts.append(
-                f"Correlations:\n{self.df[num_cols].corr().round(3).to_string()}"
+                f"Correlations:\n{self.df[num_cols_capped].corr().round(3).to_string()}"
             )
         first_col = self.df.columns[0]
         if self.df[first_col].dtype == object:
-            summary_parts.append(f"Labels: {self.df[first_col].tolist()}")
+            labels = self.df[first_col].tolist()
+            if len(labels) > 30:
+                summary_parts.append(f"Labels (first 30 of {len(labels)}): {labels[:30]}")
+            else:
+                summary_parts.append(f"Labels: {labels}")
         summary = "\n".join(summary_parts)
 
         self._think("Statistical profile complete.", 0.3)
@@ -241,9 +248,7 @@ class AutoBITab(QWidget):
         self._thread: QThread | None = None
         self._worker: AnalysisWorker | None = None
         self._last_result: dict = {}
-        self._fig = None
-        self._axes = []
-        self._canvas = None
+        self._figs = []      # list of (fig, ax, canvas) tuples
         self._sched_running = False
 
         self._setup_ui()
@@ -267,6 +272,9 @@ class AutoBITab(QWidget):
         self._tabs.addTab(self._scheduler_tab(), "  Scheduler  ")
         root.addWidget(self._tabs, 1)
 
+        # Export buttons row
+        export_row = QHBoxLayout()
+
         # PPT export
         label = "  Generate Board Presentation (PPT)" if _PPTX_OK else \
                 "  PPT (run: pip install python-pptx)"
@@ -275,7 +283,16 @@ class AutoBITab(QWidget):
         self._ppt_btn.setFixedHeight(48)
         self._ppt_btn.setEnabled(False)
         self._ppt_btn.clicked.connect(self._export_ppt)
-        root.addWidget(self._ppt_btn)
+        export_row.addWidget(self._ppt_btn)
+
+        # Summary export
+        self._summary_btn = QPushButton("  Download Summary Report")
+        self._summary_btn.setFixedHeight(48)
+        self._summary_btn.setEnabled(False)
+        self._summary_btn.clicked.connect(self._export_summary)
+        export_row.addWidget(self._summary_btn)
+
+        root.addLayout(export_row)
 
     def _header(self) -> QHBoxLayout:
         row = QHBoxLayout()
@@ -327,7 +344,7 @@ class AutoBITab(QWidget):
         vl.addWidget(self._terminal)
         return card
 
-    # ── Analysis tab ──────────────────────────────────────────────────────────
+    # ── Analysis tab ──────────────────────────────────────────────────────
     def _analysis_tab(self) -> QWidget:
         page = QWidget()
         vl = QVBoxLayout(page)
@@ -336,53 +353,86 @@ class AutoBITab(QWidget):
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setHandleWidth(6)
 
-        # LEFT — chart
+        # LEFT — tabbed charts (one chart per tab, full-width)
         left = QFrame()
         left.setObjectName("card")
         ll = QVBoxLayout(left)
         ll.setContentsMargins(8, 8, 8, 8)
 
-        chart_lbl = QLabel("  Dual Chart View (AI-selected columns)")
-        chart_lbl.setStyleSheet("font-size:11px; font-weight:bold; color:#2563EB;")
-        ll.addWidget(chart_lbl)
-
-        with plt.style.context("dark_background"):
-            self._fig, axes = plt.subplots(
-                1, 2,
-                figsize=(10, 3.5),
-                facecolor="#0f172a"
-            )
-        self._axes = list(axes)
-        for ax in self._axes:
-            ax.set_facecolor("#1e293b")
-
-        self._canvas = FigureCanvas(self._fig)
-        self._canvas.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Expanding
+        self._chart_tabs = QTabWidget()
+        self._chart_tabs.setStyleSheet(
+            "QTabBar::tab { padding: 6px 18px; font-size: 11px; }"
+            "QTabBar::tab:selected { color: #38bdf8; font-weight: bold; }"
         )
-        self._canvas.setMinimumHeight(240)
-        ll.addWidget(self._canvas, 1)
+
+        chart_labels = ["  Chart 1 - Primary KPI", "  Chart 2 - Secondary KPI"]
+        self._figs = []
+        self._hover_annots = []  # hover annotations per chart
+        for idx, label in enumerate(chart_labels):
+            with plt.style.context("dark_background"):
+                fig, ax = plt.subplots(1, 1, figsize=(10, 4.5), facecolor="#0f172a")
+            ax.set_facecolor("#1e293b")
+            canvas = FigureCanvas(fig)
+            canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+            canvas.setMinimumHeight(280)
+
+            # Navigation toolbar (zoom, pan, save)
+            toolbar = NavigationToolbar(canvas, None)
+            toolbar.setStyleSheet(
+                "QToolBar { background: #1e293b; border: none; spacing: 4px; padding: 2px; }"
+                "QToolButton { background: #0f172a; border: 1px solid #334155; "
+                "border-radius: 4px; padding: 4px 8px; color: #94a3b8; }"
+                "QToolButton:hover { background: #334155; color: #e2e8f0; }"
+            )
+
+            # Hover annotation
+            annot = ax.annotate("", xy=(0, 0), xytext=(15, 15),
+                               textcoords="offset points",
+                               bbox=dict(boxstyle="round,pad=0.4", fc="#1e293b",
+                                         ec="#38bdf8", alpha=0.95),
+                               fontsize=9, color="#e2e8f0",
+                               arrowprops=dict(arrowstyle="->", color="#38bdf8"))
+            annot.set_visible(False)
+            self._hover_annots.append(annot)
+
+            # Connect hover event
+            canvas.mpl_connect("motion_notify_event",
+                               lambda event, a=annot, f=fig, c=canvas, x=ax:
+                               self._on_hover(event, a, f, c, x))
+
+            # Tab page = toolbar + canvas
+            tab_page = QWidget()
+            tab_layout = QVBoxLayout(tab_page)
+            tab_layout.setContentsMargins(0, 0, 0, 0)
+            tab_layout.setSpacing(0)
+            tab_layout.addWidget(toolbar)
+            tab_layout.addWidget(canvas, 1)
+
+            self._figs.append((fig, ax, canvas))
+            self._chart_tabs.addTab(tab_page, label)
+
+        ll.addWidget(self._chart_tabs, 1)
         self._draw_placeholder()
         splitter.addWidget(left)
 
-        # RIGHT — brief
+        # RIGHT — executive brief
         right = QFrame()
         right.setObjectName("card")
         rl = QVBoxLayout(right)
         rl.setContentsMargins(12, 12, 12, 12)
-        brief_lbl = QLabel("  Executive Brief")
-        brief_lbl.setStyleSheet("font-size:11px; font-weight:bold; color:#2563EB;")
+        brief_lbl = QLabel("  Executive Intelligence Report")
+        brief_lbl.setStyleSheet("font-size:12px; font-weight:bold; color:#38bdf8;")
         rl.addWidget(brief_lbl)
         self._brief = QTextBrowser()
+        self._brief.setOpenExternalLinks(False)
         self._brief.setHtml(
-            "<p style='color:#64748B;text-align:center;margin-top:50px;font-size:12px;'>"
-            "Analysis results will appear here.</p>"
+            "<p style='color:#64748B;text-align:center;margin-top:60px;font-size:12px;'>"
+            "Load data and click <b>Analyze</b> to generate<br>your executive intelligence report.</p>"
         )
         rl.addWidget(self._brief, 1)
         splitter.addWidget(right)
 
-        splitter.setSizes([600, 420])
+        splitter.setSizes([580, 440])
         vl.addWidget(splitter, 1)
         return page
 
@@ -457,24 +507,33 @@ class AutoBITab(QWidget):
         vl.addWidget(self._sched_log, 1)
         return page
 
-    # ── placeholder chart ─────────────────────────────────────────────────────
+    # ── placeholder chart ─────────────────────────────────────────────
     def _draw_placeholder(self):
-        for i, ax in enumerate(self._axes):
+        for i, (fig, ax, canvas) in enumerate(self._figs):
             ax.clear()
             ax.set_facecolor("#1e293b")
-            ax.text(0.5, 0.5, f"Chart {i+1}  -  click Analyze Data",
+            ax.text(0.5, 0.5, f"Chart {i+1}  \u2014  click Analyze Data",
                     ha="center", va="center", color="#475569",
-                    fontsize=10, transform=ax.transAxes)
+                    fontsize=12, transform=ax.transAxes)
             ax.set_xticks([])
             ax.set_yticks([])
             for sp in ax.spines.values():
                 sp.set_edgecolor("#1e293b")
-        self._canvas.draw()
+            canvas.draw()
 
     def showEvent(self, event):
         super().showEvent(event)
-        if self._canvas:
-            QTimer.singleShot(60, self._canvas.draw)
+        for fig, ax, canvas in self._figs:
+            QTimer.singleShot(60, canvas.draw)
+
+    def changeEvent(self, event):
+        """Re-render brief when theme changes so colors adapt."""
+        super().changeEvent(event)
+        from PyQt6.QtCore import QEvent
+        if event.type() == QEvent.Type.StyleChange and hasattr(self, '_last_result') and self._last_result:
+            brief = self._last_result.get("executive_brief", {})
+            dq    = self._last_result.get("data_quality", {})
+            self._render_brief(brief, dq)
 
     # ── data loading ──────────────────────────────────────────────────────────
     def _load_fallback(self):
@@ -540,6 +599,7 @@ class AutoBITab(QWidget):
         try:
             vis  = result.get("visualizations", [])
             brief = result.get("executive_brief", {})
+            dq    = result.get("data_quality", {})
 
             if not vis:
                 raise ValueError("No visualizations in result")
@@ -549,17 +609,21 @@ class AutoBITab(QWidget):
                 vis = vis + vis
 
             colors = ["#38bdf8", "#e879f9"]
-            for ax, v, c in zip(self._axes, vis[:2], colors):
-                self._draw_chart(ax, v, c)
+            for idx, (v, c) in enumerate(zip(vis[:2], colors)):
+                if idx < len(self._figs):
+                    fig, ax, canvas = self._figs[idx]
+                    self._draw_chart(ax, v, c)
+                    chart_title = v.get("title", f"Chart {idx+1}")
+                    self._chart_tabs.setTabText(idx, f"  {chart_title}")
+                    QApplication.processEvents()
+                    canvas.draw()
+                    canvas.update()
+                    QTimer.singleShot(100, canvas.draw)
 
-            QApplication.processEvents()
-            self._canvas.draw()
-            self._canvas.update()
-            QTimer.singleShot(100, self._canvas.draw)
-
-            self._render_brief(brief)
+            self._render_brief(brief, dq)
             self._set_status("  Analysis complete. PPT export ready.")
             self._ppt_btn.setEnabled(True)
+            self._summary_btn.setEnabled(True)
 
         except Exception:
             self._terminal.append_text(f"\n  RENDER ERROR:\n{traceback.format_exc()}\n")
@@ -587,69 +651,435 @@ class AutoBITab(QWidget):
         return x, y
 
     def _draw_chart(self, ax, vis: dict, color: str):
+        from matplotlib.ticker import MaxNLocator
         ct    = vis.get("chart_type", "line").lower()
         title = vis.get("title", "")
         x_col, y_col = self._safe_cols(vis)
-        xd, yd = self._df[x_col], self._df[y_col]
+        xd, yd = self._df[x_col].copy(), self._df[y_col].copy()
 
         ax.clear()
         ax.set_facecolor("#1e293b")
 
+        n = len(xd)
+        MAX_POINTS = 40   # max data points to render cleanly
+
         if ct == "bar":
-            bars = ax.bar(xd, yd, color=color, alpha=0.85)
-            for b in bars:
-                ax.annotate(f"{b.get_height():,.0f}",
-                            xy=(b.get_x() + b.get_width() / 2, b.get_height()),
-                            xytext=(0, 3), textcoords="offset points",
-                            ha="center", fontsize=7, color="#94a3b8")
+            if n > MAX_POINTS:
+                # Show top-N values sorted descending
+                temp = pd.DataFrame({"x": xd, "y": yd}).dropna()
+                temp = temp.nlargest(MAX_POINTS, "y")
+                xd, yd = temp["x"], temp["y"]
+                title = f"{title} (top {MAX_POINTS})" if title else f"Top {MAX_POINTS}"
+            bars = ax.bar(range(len(xd)), yd, color=color, alpha=0.85)
+            ax.set_xticks(range(len(xd)))
+            ax.set_xticklabels([str(v)[:12] for v in xd], rotation=40, ha="right", fontsize=6)
+            # Only annotate if few enough bars
+            if len(bars) <= 25:
+                for b in bars:
+                    ax.annotate(f"{b.get_height():,.0f}",
+                                xy=(b.get_x() + b.get_width() / 2, b.get_height()),
+                                xytext=(0, 3), textcoords="offset points",
+                                ha="center", fontsize=6, color="#94a3b8")
+        elif ct == "scatter":
+            # Scatter works fine with many points — just reduce marker size
+            ax.scatter(xd, yd, color=color, alpha=0.5, s=8, edgecolors="none")
         elif ct == "pie":
-            pcolors = ["#38bdf8", "#e879f9", "#34d399", "#fb923c", "#a78bfa"]
+            if n > 10:
+                # Group small slices into "Other"
+                temp = pd.DataFrame({"x": xd, "y": yd}).dropna()
+                temp = temp.nlargest(9, "y")
+                other_val = yd.sum() - temp["y"].sum()
+                if other_val > 0:
+                    temp = pd.concat([temp, pd.DataFrame({"x": ["Other"], "y": [other_val]})], ignore_index=True)
+                xd, yd = temp["x"], temp["y"]
+            pcolors = ["#38bdf8", "#e879f9", "#34d399", "#fb923c", "#a78bfa",
+                       "#f87171", "#fbbf24", "#60a5fa", "#c084fc", "#4ade80"]
             ax.pie(yd, labels=xd, autopct="%1.0f%%",
                    colors=pcolors[:len(yd)],
                    textprops={"color": "#e2e8f0", "fontsize": 7})
         else:
-            ax.plot(xd, yd, color=color, linewidth=2,
-                    marker="o", markersize=4,
+            # Line / area — downsample by binning
+            if n > MAX_POINTS:
+                temp = pd.DataFrame({"x": xd, "y": yd}).dropna().reset_index(drop=True)
+                bin_size = max(1, n // MAX_POINTS)
+                temp["bin"] = temp.index // bin_size
+                agg = temp.groupby("bin").agg({"x": "first", "y": "mean"}).reset_index()
+                xd, yd = agg["x"], agg["y"]
+
+            ax.plot(range(len(xd)), yd, color=color, linewidth=2,
+                    marker="o", markersize=3 if len(xd) > 20 else 4,
                     markerfacecolor="#e879f9", label=y_col)
             ax.fill_between(range(len(xd)), yd, alpha=0.08, color=color)
             ax.legend(fontsize=8, labelcolor="#94a3b8", framealpha=0.1)
+            # Set readable x-tick labels
+            tick_step = max(1, len(xd) // 10)
+            ax.set_xticks(range(0, len(xd), tick_step))
+            ax.set_xticklabels([str(v)[:12] for v in xd.iloc[::tick_step]], rotation=30, ha="right", fontsize=6)
 
         ax.set_title(title, color=color, fontsize=10, fontweight="bold", pad=6)
         ax.set_xlabel(x_col, color="#94a3b8", fontsize=8)
         ax.set_ylabel(y_col, color="#94a3b8", fontsize=8)
         ax.tick_params(colors="#64748b", labelsize=7)
-        if ct != "pie":
-            plt.setp(ax.xaxis.get_majorticklabels(), rotation=30, ha="right", fontsize=7)
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=6))
         for sp in ax.spines.values():
             sp.set_edgecolor("#1e293b")
         ax.grid(axis="y", color="#334155", linestyle="--", linewidth=0.4, alpha=0.5)
 
         try:
-            self._fig.tight_layout(pad=1.5)
+            ax.figure.tight_layout(pad=1.5)
         except Exception:
             pass
 
-    # ── executive brief ───────────────────────────────────────────────────────
-    def _render_brief(self, brief: dict):
+    def _on_hover(self, event, annot, fig, canvas, ax):
+        """Show tooltip when hovering over chart data."""
+        if event.inaxes != ax:
+            if annot.get_visible():
+                annot.set_visible(False)
+                canvas.draw_idle()
+            return
+
+        found = False
+        # Check bars
+        for container in ax.containers:
+            for bar in container:
+                if bar.contains(event)[0]:
+                    x_pos = bar.get_x() + bar.get_width() / 2
+                    y_val = bar.get_height()
+                    annot.xy = (x_pos, y_val)
+                    annot.set_text(f"{y_val:,.2f}")
+                    annot.set_visible(True)
+                    found = True
+                    break
+            if found:
+                break
+
+        # Check lines
+        if not found:
+            for line in ax.get_lines():
+                cont, ind = line.contains(event)
+                if cont and ind and "ind" in ind:
+                    idx = ind["ind"][0]
+                    xdata = line.get_xdata()
+                    ydata = line.get_ydata()
+                    annot.xy = (xdata[idx], ydata[idx])
+                    annot.set_text(f"x={xdata[idx]:.0f}\ny={ydata[idx]:,.2f}")
+                    annot.set_visible(True)
+                    found = True
+                    break
+
+        # Check scatter
+        if not found:
+            for coll in ax.collections:
+                cont, ind = coll.contains(event)
+                if cont and ind and "ind" in ind:
+                    idx = ind["ind"][0]
+                    offsets = coll.get_offsets()
+                    pos = offsets[idx]
+                    annot.xy = (pos[0], pos[1])
+                    annot.set_text(f"({pos[0]:,.2f}, {pos[1]:,.2f})")
+                    annot.set_visible(True)
+                    found = True
+                    break
+
+        if not found and annot.get_visible():
+            annot.set_visible(False)
+
+        canvas.draw_idle()
+
+    # ── executive brief ───────────────────────────────────────────────
+    def _render_brief(self, brief: dict, dq: dict = None):
+        dark = ThemeManager.is_dark()
+
+        # Theme-adaptive palette
+        if dark:
+            t = {
+                "bg": "#0f172a", "bg2": "#1e293b", "bg_hl": "#0f2847",
+                "border": "#1e293b", "border_hl": "#1e3a5f",
+                "text": "#e2e8f0", "text2": "#cbd5e1", "text3": "#94a3b8",
+                "text_dim": "#64748b", "headline_text": "#f1f5f9",
+                "divider": "#1e293b",
+                "risk_bg": "#1c0a0a", "risk_border": "#7f1d1d", "risk_text": "#fca5a5",
+                "dq_bg": "#0c1222",
+                "action_circle_bg": "#064e3b",
+                "stat_num": "#e2e8f0",
+            }
+        else:
+            t = {
+                "bg": "#ffffff", "bg2": "#f1f5f9", "bg_hl": "#eff6ff",
+                "border": "#e2e8f0", "border_hl": "#bfdbfe",
+                "text": "#0f172a", "text2": "#334155", "text3": "#475569",
+                "text_dim": "#94a3b8", "headline_text": "#0f172a",
+                "divider": "#e2e8f0",
+                "risk_bg": "#fef2f2", "risk_border": "#fecaca", "risk_text": "#991b1b",
+                "dq_bg": "#f8fafc",
+                "action_circle_bg": "#d1fae5",
+                "stat_num": "#0f172a",
+            }
+
+        # Accent colors (same in both modes)
+        cyan = "#2563eb" if not dark else "#38bdf8"
+        purple = "#7c3aed" if not dark else "#a78bfa"
+        green = "#059669" if not dark else "#34d399"
+        red = "#dc2626" if not dark else "#f87171"
+
+        headline = brief.get("headline", "Analysis Complete")
         trend = brief.get("the_trend", "Trend detected.")
         corr  = brief.get("the_correlation", "Correlation found.")
+        risk  = brief.get("the_risk", "")
         plan  = brief.get("the_action_plan", "1. Act.\n2. Monitor.\n3. Iterate.")
         items = [l.strip() for l in str(plan).split("\n") if l.strip()]
-        li    = "".join(f"<li style='margin:6px 0;color:#cbd5e1'>{i}</li>" for i in items)
-        self._brief.setHtml(f"""
-        <div style='font-family:Segoe UI,system-ui;padding:10px;color:#e2e8f0'>
-          <p style='color:#38bdf8;font-weight:600;font-size:12px;margin:0 0 4px'>THE TREND</p>
-          <p style='background:#0f172a;border-left:3px solid #38bdf8;border-radius:4px;
-                    padding:10px;font-size:12px;color:#cbd5e1;margin:0 0 14px'>{trend}</p>
-          <p style='color:#e879f9;font-weight:600;font-size:12px;margin:0 0 4px'>THE CORRELATION</p>
-          <p style='background:#0f172a;border-left:3px solid #e879f9;border-radius:4px;
-                    padding:10px;font-size:12px;color:#cbd5e1;margin:0 0 14px'>{corr}</p>
-          <p style='color:#34d399;font-weight:600;font-size:12px;margin:0 0 4px'>THE ACTION PLAN</p>
-          <div style='background:#0f172a;border-left:3px solid #34d399;border-radius:4px;
-                      padding:10px;margin:0 0 10px'>
-            <ol style='margin:0;padding-left:16px'>{li}</ol>
-          </div>
-        </div>""")
+
+        # Numbered action items
+        action_rows = ""
+        for idx, item in enumerate(items):
+            clean = item.lstrip("0123456789.) ").strip() or item
+            action_rows += (
+                f"<tr><td style='vertical-align:top;padding:6px 10px 6px 0;width:28px'>"
+                f"<div style='width:22px;height:22px;border-radius:50%;background:{t['action_circle_bg']};"
+                f"color:{green};font-size:11px;font-weight:700;text-align:center;"
+                f"line-height:22px'>{idx+1}</div></td>"
+                f"<td style='padding:6px 0;font-size:12px;color:{t['text2']};line-height:1.5'>"
+                f"{clean}</td></tr>"
+            )
+
+        # Data quality
+        dq = dq or {}
+        conf = dq.get("confidence", "medium").lower()
+        conf_reason = dq.get("confidence_reason", "")
+        conf_colors = {"high": green, "medium": "#d97706" if not dark else "#fbbf24", "low": red}
+        conf_bg_map = {
+            "high": t["action_circle_bg"],
+            "medium": "#fef3c7" if not dark else "#422006",
+            "low": t["risk_bg"]
+        }
+        conf_color = conf_colors.get(conf, conf_colors["medium"])
+        conf_bgcolor = conf_bg_map.get(conf, conf_bg_map["medium"])
+
+        # Risk card
+        risk_html = ""
+        if risk:
+            risk_html = (
+                f"<div style='margin:0 0 16px;background:{t['risk_bg']};border:1px solid {t['risk_border']};"
+                f"border-radius:8px;padding:12px 14px'>"
+                f"<table style='width:100%;border:none'><tr>"
+                f"<td style='width:24px;vertical-align:top;padding-right:10px'>"
+                f"<span style='font-size:16px'>&#9888;</span></td>"
+                f"<td>"
+                f"<p style='color:{red};font-weight:700;font-size:11px;margin:0 0 4px;"
+                f"text-transform:uppercase;letter-spacing:1px'>RISK &amp; ANOMALY</p>"
+                f"<p style='margin:0;font-size:12px;color:{t['risk_text']};line-height:1.5'>{risk}</p>"
+                f"</td></tr></table></div>"
+            )
+
+        # Data quality footer
+        dq_html = ""
+        if conf_reason:
+            dq_html = (
+                f"<div style='margin:16px 0 0;padding:12px 14px;background:{t['dq_bg']};"
+                f"border-radius:8px;border:1px solid {t['border']}'>"
+                f"<table style='width:100%;border:none'><tr>"
+                f"<td style='width:auto'>"
+                f"<p style='color:{t['text_dim']};font-size:9px;font-weight:700;margin:0 0 5px;"
+                f"text-transform:uppercase;letter-spacing:1.5px'>DATA QUALITY ASSESSMENT</p>"
+                f"<p style='margin:0;font-size:12px;color:{t['text3']};line-height:1.5'>{conf_reason}</p>"
+                f"</td>"
+                f"<td style='width:70px;text-align:center;vertical-align:top'>"
+                f"<div style='display:inline-block;background:{conf_bgcolor};"
+                f"color:{conf_color};font-size:10px;font-weight:800;padding:4px 10px;"
+                f"border-radius:12px;letter-spacing:1px'>{conf.upper()}</div>"
+                f"</td></tr></table></div>"
+            )
+
+        # Dataset stats pills
+        stats_html = ""
+        if self._df is not None:
+            n_rows, n_cols = self._df.shape
+            num_count = len(self._df.select_dtypes(include="number").columns)
+            null_pct = (self._df.isnull().sum().sum() / max(1, n_rows * n_cols) * 100)
+            null_color = green if null_pct < 5 else conf_colors["medium"] if null_pct < 15 else red
+            stats_html = (
+                f"<table style='width:100%;margin:0 0 16px;border-collapse:separate;"
+                f"border-spacing:6px 0'><tr>"
+                f"<td style='background:{t['bg2']};padding:6px 10px;border-radius:6px;"
+                f"text-align:center;border:1px solid {t['border']}'>"
+                f"<p style='margin:0;color:{t['text_dim']};font-size:9px;font-weight:600;"
+                f"text-transform:uppercase;letter-spacing:0.5px'>ROWS</p>"
+                f"<p style='margin:2px 0 0;color:{t['stat_num']};font-size:13px;font-weight:700'>"
+                f"{n_rows:,}</p></td>"
+                f"<td style='background:{t['bg2']};padding:6px 10px;border-radius:6px;"
+                f"text-align:center;border:1px solid {t['border']}'>"
+                f"<p style='margin:0;color:{t['text_dim']};font-size:9px;font-weight:600;"
+                f"text-transform:uppercase;letter-spacing:0.5px'>COLUMNS</p>"
+                f"<p style='margin:2px 0 0;color:{t['stat_num']};font-size:13px;font-weight:700'>"
+                f"{n_cols}</p></td>"
+                f"<td style='background:{t['bg2']};padding:6px 10px;border-radius:6px;"
+                f"text-align:center;border:1px solid {t['border']}'>"
+                f"<p style='margin:0;color:{t['text_dim']};font-size:9px;font-weight:600;"
+                f"text-transform:uppercase;letter-spacing:0.5px'>NUMERIC</p>"
+                f"<p style='margin:2px 0 0;color:{cyan};font-size:13px;font-weight:700'>"
+                f"{num_count}</p></td>"
+                f"<td style='background:{t['bg2']};padding:6px 10px;border-radius:6px;"
+                f"text-align:center;border:1px solid {t['border']}'>"
+                f"<p style='margin:0;color:{t['text_dim']};font-size:9px;font-weight:600;"
+                f"text-transform:uppercase;letter-spacing:0.5px'>MISSING</p>"
+                f"<p style='margin:2px 0 0;color:{null_color};font-size:13px;font-weight:700'>"
+                f"{null_pct:.1f}%</p></td>"
+                f"</tr></table>"
+            )
+
+        # Insight card builder
+        def insight_card(label, accent, body):
+            return (
+                f"<div style='margin:0 0 16px;background:{t['bg']};border-radius:8px;"
+                f"border:1px solid {t['border']};overflow:hidden'>"
+                f"<div style='background:{accent};height:3px'></div>"
+                f"<div style='padding:12px 14px'>"
+                f"<p style='color:{accent};font-weight:700;font-size:10px;margin:0 0 6px;"
+                f"text-transform:uppercase;letter-spacing:1.2px'>{label}</p>"
+                f"<p style='margin:0;font-size:12px;color:{t['text2']};line-height:1.6'>{body}</p>"
+                f"</div></div>"
+            )
+
+        self._brief.setHtml(
+            f"<div style='font-family:Segoe UI,system-ui;padding:6px;color:{t['text']}'>"
+            # Headline banner
+            f"<div style='background:{t['bg_hl']};border-radius:10px;"
+            f"padding:16px 18px;margin:0 0 16px;border:1px solid {t['border_hl']}'>"
+            f"<p style='color:{cyan};font-size:9px;font-weight:700;margin:0 0 6px;"
+            f"text-transform:uppercase;letter-spacing:2px'>EXECUTIVE HEADLINE</p>"
+            f"<p style='color:{t['headline_text']};font-size:16px;font-weight:700;margin:0;"
+            f"line-height:1.4'>{headline}</p>"
+            f"</div>"
+            + stats_html
+            + f"<hr style='border:none;border-top:1px solid {t['divider']};margin:0 0 16px'>"
+            + insight_card("THE TREND", cyan, trend)
+            + insight_card("THE CORRELATION", purple, corr)
+            + risk_html
+            # Action Plan
+            + f"<div style='margin:0 0 16px;background:{t['bg']};border-radius:8px;"
+            f"border:1px solid {t['border']};overflow:hidden'>"
+            f"<div style='background:{green};height:3px'></div>"
+            f"<div style='padding:12px 14px'>"
+            f"<p style='color:{green};font-weight:700;font-size:10px;margin:0 0 8px;"
+            f"text-transform:uppercase;letter-spacing:1.2px'>RECOMMENDED ACTIONS</p>"
+            f"<table style='width:100%;border:none;border-collapse:collapse'>"
+            f"{action_rows}</table>"
+            f"</div></div>"
+            + dq_html
+            + "</div>"
+        )
+
+    # ── Summary export ────────────────────────────────────────────────────────
+    def _export_summary(self):
+        if not self._last_result:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Summary Report", "auto_bi_summary.txt",
+            "Text Files (*.txt);;Markdown (*.md);;All Files (*)"
+        )
+        if not path:
+            return
+
+        brief = self._last_result.get("executive_brief", {})
+        dq    = self._last_result.get("data_quality", {})
+
+        headline = brief.get("headline", "Analysis Complete")
+        trend    = brief.get("the_trend", "N/A")
+        corr     = brief.get("the_correlation", "N/A")
+        risk     = brief.get("the_risk", "")
+        plan     = brief.get("the_action_plan", "")
+        plan_items = [l.strip() for l in str(plan).split("\n") if l.strip()]
+
+        conf = dq.get("confidence", "N/A") if dq else "N/A"
+        conf_reason = dq.get("confidence_reason", "") if dq else ""
+
+        # Dataset info
+        ds_info = ""
+        if self._df is not None:
+            n_rows, n_cols = self._df.shape
+            num_count = len(self._df.select_dtypes(include="number").columns)
+            null_pct = (self._df.isnull().sum().sum() / max(1, n_rows * n_cols) * 100)
+            ds_info = (
+                f"  Rows:           {n_rows:,}\n"
+                f"  Columns:        {n_cols}\n"
+                f"  Numeric cols:   {num_count}\n"
+                f"  Missing data:   {null_pct:.1f}%\n"
+            )
+
+        sep = "=" * 60
+        sub = "-" * 60
+        from datetime import datetime
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        lines = [
+            sep,
+            "  AUTO-BI EXECUTIVE INTELLIGENCE REPORT",
+            f"  Generated: {now}",
+            f"  Smart Macro Station",
+            sep,
+            "",
+        ]
+
+        if ds_info:
+            lines += [
+                "DATASET OVERVIEW",
+                sub,
+                ds_info,
+            ]
+
+        lines += [
+            "EXECUTIVE HEADLINE",
+            sub,
+            f"  {headline}",
+            "",
+            "THE TREND",
+            sub,
+            f"  {trend}",
+            "",
+            "THE CORRELATION",
+            sub,
+            f"  {corr}",
+            "",
+        ]
+
+        if risk:
+            lines += [
+                "RISK & ANOMALY",
+                sub,
+                f"  {risk}",
+                "",
+            ]
+
+        lines += [
+            "RECOMMENDED ACTIONS",
+            sub,
+        ]
+        for i, item in enumerate(plan_items):
+            clean = item.lstrip("0123456789.) ").strip() or item
+            lines.append(f"  {i+1}. {clean}")
+        lines.append("")
+
+        if conf_reason:
+            lines += [
+                "DATA QUALITY ASSESSMENT",
+                sub,
+                f"  Confidence: {conf.upper() if isinstance(conf, str) else conf}",
+                f"  {conf_reason}",
+                "",
+            ]
+
+        lines += [
+            sep,
+            "  End of Report",
+            sep,
+        ]
+
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines))
+            self._set_status(f"  Summary saved: {os.path.basename(path)}")
+        except Exception as e:
+            self._terminal.append_text(f"\n  SAVE ERROR: {e}\n")
 
     # ── PPT export ────────────────────────────────────────────────────────────
     def _export_ppt(self):
@@ -720,14 +1150,15 @@ class AutoBITab(QWidget):
         txt(s1, "Auto-BI Executive Report", 0.8, 1.5, 8, 1.2, 40, True, CYAN)
         txt(s1, "Generated by Smart Macro Station", 0.8, 3.0, 8, 0.7, 18, False, WHITE)
 
-        # Slide 2 — chart screenshot
-        s2 = blank()
-        txt(s2, "Data Visualisation", 0.5, 0.2, 9, 0.6, 18, True, CYAN)
-        buf = io.BytesIO()
-        self._fig.savefig(buf, format="png", bbox_inches="tight",
-                          facecolor="#0f172a", dpi=150)
-        buf.seek(0)
-        s2.shapes.add_picture(buf, Inches(0.5), Inches(0.85), Inches(9.0), Inches(5.5))
+        # Slide 2+3 — chart screenshots (one per chart tab)
+        for ch_idx, (fig, ax, canvas) in enumerate(self._figs):
+            s = blank()
+            txt(s, f"Data Visualisation {ch_idx+1}", 0.5, 0.2, 9, 0.6, 18, True, CYAN)
+            buf = io.BytesIO()
+            fig.savefig(buf, format="png", bbox_inches="tight",
+                        facecolor="#0f172a", dpi=150)
+            buf.seek(0)
+            s.shapes.add_picture(buf, Inches(0.5), Inches(0.85), Inches(9.0), Inches(5.5))
 
         # Slide 3 — trend + correlation
         s3 = blank()
